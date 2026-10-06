@@ -283,7 +283,6 @@ function loadVideo(f){
   if(videoEl.src)URL.revokeObjectURL(videoEl.src);
   videoEl.src=URL.createObjectURL(f);
   videoEl.load();
-  setupAudio(); // hear the video (element audio is rerouted once tapped)
   videoEl.onloadedmetadata=()=>{
     $('uploadCard').hidden=true; $('studio').hidden=false;
     canvas.width=videoEl.videoWidth; canvas.height=videoEl.videoHeight;
@@ -297,14 +296,6 @@ function loadVideo(f){
     msg('📹 '+videoEl.videoWidth+'×'+videoEl.videoHeight+' • '+d+'s — tap a LUT to try it 👇');
   };
   videoEl.onerror=()=>msg('Could not play this video on your device','err');
-}
-/* tap the element's audio: hear it on speakers + feed the recorder */
-function setupAudio(){
-  try{
-    actx=actx||new (window.AudioContext||window.webkitAudioContext)();
-    if(actx.state==='suspended')actx.resume();
-    if(!mediaSrc){ mediaSrc=actx.createMediaElementSource(videoEl); mediaSrc.connect(actx.destination); }
-  }catch(e){}
 }
 $('br').oninput=e=>{ $('brVal').textContent=e.target.value+' Mbps'; };
 $('playBtn').onclick=()=>{videoEl.paused?videoEl.play():videoEl.pause();};
@@ -326,7 +317,31 @@ cmp.addEventListener('pointerdown',cmpOn);
 cmp.addEventListener('contextmenu',e=>e.preventDefault());
 
 /* ---------- export ---------- */
-let exporting=false, actx=null, mediaSrc=null;
+let exporting=false, safAC=null, safSrc=null;
+/* Export audio: capture straight from the video element (Chrome/Firefox) so no stale
+   WebAudio clock can inflate the file's timestamps/duration. Safari (no element capture)
+   falls back to a lazily-created WebAudio tap. */
+function exportAudio(){
+  try{
+    if(typeof videoEl.captureStream==='function'){
+      const s=videoEl.captureStream();
+      const ts=s.getAudioTracks();
+      if(ts.length)return{tracks:ts,stop:()=>{try{s.getTracks().forEach(t=>t.stop())}catch(e){}}};
+    }
+  }catch(e){}
+  try{
+    const AC=window.AudioContext||window.webkitAudioContext;
+    if(!AC)return{tracks:[],stop:()=>{}};
+    if(!safAC){
+      safAC=new AC(); if(safAC.state==='suspended')safAC.resume();
+      safSrc=safAC.createMediaElementSource(videoEl);
+      safSrc.connect(safAC.destination);
+    }
+    const dest=safAC.createMediaStreamDestination();
+    safSrc.connect(dest);
+    return{tracks:dest.stream.getAudioTracks(),stop:()=>{try{safSrc.disconnect(dest)}catch(e){}}};
+  }catch(e){return{tracks:[],stop:()=>{}};}
+}
 function encCandidates(fmt){
   const mp4=[['video/mp4','mp4','MP4']];
   const hevc=[['video/mp4;codecs=hvc1','mp4','HEVC'],['video/mp4;codecs=hev1','mp4','HEVC']];
@@ -377,12 +392,10 @@ function renderPass(stream,mime,bps,resW,resH,saneDur){
 $('expBtn').onclick=async()=>{
   if(exporting||!videoEl.videoWidth)return;
   exporting=true; $('expBtn').disabled=true; $('dlZone').innerHTML='';
+  let aud=null;
   try{
-    setupAudio();
-    const dest=actx.createMediaStreamDestination();
-    mediaSrc.connect(dest);
-    const audioTracks=dest.stream.getAudioTracks();
-    const stream=new MediaStream([...canvas.captureStream(60).getVideoTracks(),...audioTracks]);
+    aud=exportAudio();
+    const stream=new MediaStream([...canvas.captureStream(60).getVideoTracks(),...aud.tracks]);
     const [resW,resH]=exportSize();
     const bps=+$('br').value*1000000;
     const fmt=$('fmtSel').value;
@@ -404,7 +417,6 @@ $('expBtn').onclick=async()=>{
       msg(l+' came out too small — trying a better encoder…');
     }
     if(!blob){ if(!best)throw new Error('encoder produced no data'); blob=best.blob;ext=best.ext;lab=best.lab; }
-    try{mediaSrc.disconnect(dest);}catch(e){}
     const mb=(blob.size/1048576).toFixed(1);
     const a=document.createElement('a');
     a.href=URL.createObjectURL(blob);
@@ -414,6 +426,7 @@ $('expBtn').onclick=async()=>{
     $('dlZone').appendChild(a); a.click();
     msg('Done — '+lab+' '+resW+'×'+resH+' saved ✓ ('+mb+' MB)','ok');
   }catch(e){msg('Export failed: '+e.message,'err');}
+  try{if(aud)aud.stop();}catch(e){}
   exporting=false; $('expBtn').disabled=false; videoEl.onended=null;
 };
 
