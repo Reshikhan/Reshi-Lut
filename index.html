@@ -134,7 +134,7 @@ function parseCube(txt){
 
 /* ---------- WebGL ---------- */
 let gl, texV, texL, U={}, glReady=false, hasLUT=false;
-let intensity=1, showOrig=false, active='__orig', origBps=0;
+let intensity=1, showOrig=false, active='__orig', origBps=0, origSize=0;
 const luts=[]; // {name, lut}
 
 function initGL(){
@@ -266,6 +266,7 @@ function loadVideo(f){
     $('uploadCard').hidden=true; $('studio').hidden=false;
     canvas.width=videoEl.videoWidth; canvas.height=videoEl.videoHeight;
     origBps=(videoEl.duration>0&&f.size>0)?(f.size*8/videoEl.duration):0; // original bitrate → export matches it
+    origSize=f.size||0;
     selectLUT(active);
     videoEl.play().catch(()=>{});
     msg('Tap a LUT to try it 👇');
@@ -335,21 +336,28 @@ $('expBtn').onclick=async()=>{
     const bps=origBps>0?Math.min(120000000,Math.round(origBps*1.25)):Math.round(canvas.width*canvas.height*30*0.08);
     const cands=encCandidates();
     if(!cands.length)throw new Error('no video encoder in this browser');
-    let blob=null,ext='webm',lab='WebM';
+    // Some browsers (Chrome's MP4 recorder) ignore the requested bitrate and return a tiny file.
+    // So: render with each encoder, keep the first whose size is close to the original; else keep the biggest.
+    const expectedMin=origSize>0?origSize*0.6:0;
+    let blob=null, ext='webm', lab='WebM', best=null;
     for(const [mime,e,l] of cands){
       const chunks=await renderPass(stream,mime,bps);
       videoEl.pause();
-      blob=new Blob(chunks,{type:mime.split(';')[0]});
-      if(blob.size){ext=e;lab=l;break;}
+      const b=new Blob(chunks,{type:mime.split(';')[0]});
+      if(b.size&&(!best||b.size>best.blob.size))best={blob:b,ext:e,lab:l};
+      if(b.size>=expectedMin&&expectedMin>0){blob=b;ext=e;lab=l;break;}
+      if(!expectedMin&&b.size){blob=b;ext=e;lab=l;break;}
+      msg(l+' came out too small — trying a better encoder…');
     }
-    if(!blob||!blob.size)throw new Error('encoder produced no data');
+    if(!blob){ if(!best)throw new Error('encoder produced no data'); blob=best.blob;ext=best.ext;lab=best.lab; }
+    const mb=(blob.size/1048576).toFixed(1);
     const a=document.createElement('a');
     a.href=URL.createObjectURL(blob);
     a.download='reshi-graded-'+Date.now()+'.'+ext;
     a.className='dl';
-    a.textContent='⬇ Download '+ext.toUpperCase()+' ('+(blob.size/1048576).toFixed(1)+' MB)';
+    a.textContent='⬇ Download '+ext.toUpperCase()+' ('+mb+' MB)';
     $('dlZone').appendChild(a); a.click();
-    msg('Done — '+lab+' video saved ✓','ok');
+    msg('Done — '+lab+' saved ✓ ('+mb+' MB)','ok');
   }catch(e){msg('Export failed: '+e.message,'err');}
   exporting=false; $('expBtn').disabled=false; videoEl.onended=null;
 };
