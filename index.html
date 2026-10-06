@@ -23,7 +23,7 @@
     border-radius:14px; border:1px dashed #3b4770; background:transparent; margin-top:10px}
   .hint{color:#9aa6c4; font-size:.78rem; text-align:center; margin:10px 0 0}
   h2{font-size:1rem; margin:18px 0 10px; color:#cdd6f4}
-  canvas#gl{width:100%; border-radius:12px; background:#000; display:block; aspect-ratio:16/9}
+  canvas#gl{width:100%; height:auto; border-radius:12px; background:#000; display:block}
   .trow{display:flex; align-items:center; gap:10px; margin-top:10px}
   .trow button{flex:0 0 auto; width:52px; height:44px; font-size:1.2rem; border-radius:12px; border:1px solid #3b4770;
     background:#141c38; color:#fff; cursor:pointer}
@@ -150,7 +150,7 @@ function initGL(){
     ' vec3 c0=texture2D(lutTex,(vec2(s.r,s.g+b0*lutN)+.5)/tsz).rgb;',
     ' vec3 c1=texture2D(lutTex,(vec2(s.r,s.g+b1*lutN)+.5)/tsz).rgb;',
     ' return mix(c0,c1,fract(s.b));}',
-    'void main(){ vec3 c=texture2D(videoTex,uv).rgb;',
+    'void main(){ vec3 c=texture2D(videoTex,vec2(uv.x,1.-uv.y)).rgb;',
     ' vec3 g=useLUT>.5?applyLUT(c):c;',
     ' vec3 fin=mix(c,g,intensity*(1.-bypass));',
     ' gl_FragColor=vec4(fin,1.);}'].join('\n');
