@@ -104,7 +104,7 @@
     <div id="dlZone"></div>
     <p id="msg"></p>
   </div>
-<p style="text-align:center;color:#5b6579;font-size:.7rem;margin-top:24px">v1.10</p>
+<p style="text-align:center;color:#5b6579;font-size:.7rem;margin-top:24px">v1.11</p>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -357,19 +357,24 @@ function exportSize(){
   let w=Math.round(vw*s), h=Math.round(vh*s);
   return [w-(w%2), h-(h%2)]; // encoders need even dimensions
 }
-/* one full render pass; stops on 'ended', on stalled playback (bad duration metadata),
-   or on a hard cap — never runs away to hours, never hangs silently.
-   If the tab loses focus mid-export, recording PAUSES and resumes when you're back,
-   so a throttled tab can never silently produce a broken file. */
+/* one full render pass; the promise ALWAYS settles: 'ended', stall, or an
+   unconditional hard cap — a silent hang is structurally impossible.
+   If the tab loses focus mid-export, recording PAUSES and resumes when you're back. */
 function renderPass(stream,mime,bps,resW,resH,saneDur){
   return new Promise((resolve,reject)=>{
     const chunks=[];
-    let rec=null, done=false, hidden=false, hideT=0, pausedMs=0, wl=null, capTimer=null;
+    let rec=null, done=false, settled=false, hidden=false, hideT=0, pausedMs=0;
+    let wl=null, capTimer=null, playWatch=null;
     const t0=Date.now(), capMs=saneDur*1000+10000;
     const holdWake=()=>{ try{ navigator.wakeLock.request('screen').then(w=>{wl=w;}).catch(()=>{}); }catch(e){} };
     const cleanup=()=>{ document.removeEventListener('visibilitychange',onVis);
-      try{if(wl)wl.release();}catch(e){} if(capTimer){clearTimeout(capTimer);capTimer=null;} };
-    const finish=()=>{ if(done)return; done=true; cleanup(); try{rec.stop();}catch(e){} };
+      try{if(wl)wl.release();}catch(e){}
+      if(capTimer){clearTimeout(capTimer);capTimer=null;}
+      if(playWatch){clearTimeout(playWatch);playWatch=null;} };
+    const settle=v=>{ if(settled)return; settled=true; cleanup(); resolve(v); };
+    const finish=()=>{ if(done)return; done=true;
+      try{ if(rec&&rec.state==='recording')rec.stop(); }catch(e){}
+      setTimeout(()=>settle(chunks),500); }; // settle even if onstop never fires
     const fail=e=>{ if(done)return; done=true; cleanup(); reject(e); };
     const onVis=()=>{
       if(done||!rec)return;
@@ -390,7 +395,7 @@ function renderPass(stream,mime,bps,resW,resH,saneDur){
     try{ rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:bps}); }
     catch(e){ fail(e); return; }
     rec.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};
-    rec.onstop=()=>{ finish(); resolve(chunks); };
+    rec.onstop=()=>settle(chunks);
     rec.onerror=()=>fail(new Error('encoder error'));
     document.addEventListener('visibilitychange',onVis);
     videoEl.addEventListener('timeupdate',tick);
@@ -399,28 +404,28 @@ function renderPass(stream,mime,bps,resW,resH,saneDur){
     msg('📌 Keep this tab open until done… 0%');
     $('prog').hidden=false; $('bar').style.width='0%';
     canvas.width=resW; canvas.height=resH;
-    capTimer=setTimeout(()=>{ if(rec&&rec.state==='recording')finish(); },capMs); // hard cap, independent of events
-    // start recording only once the seek-to-0 has landed, so 'ended' state always restarts cleanly
-    let began=false;
-    const begin=()=>{ if(began||done)return; began=true;
-      try{ rec.start(250); }catch(e){ fail(e); return; }
-      videoEl.play().then(()=>{
-        setTimeout(()=>{ if(!done&&!hidden&&videoEl.paused&&videoEl.currentTime<0.05) fail(new Error('playback did not start')); },5000);
+    capTimer=setTimeout(()=>finish(),capMs); // UNCONDITIONAL hard cap: never hangs
+    try{ rec.start(250); }catch(e){ fail(e); return; }
+    try{
+      Promise.resolve(videoEl.play()).then(()=>{
+        playWatch=setTimeout(()=>{ if(!done&&!hidden&&videoEl.paused) fail(new Error('playback did not start')); },8000);
       }).catch(fail);
-    };
-    const onSeeked=()=>{ videoEl.removeEventListener('seeked',onSeeked); begin(); };
-    videoEl.addEventListener('seeked',onSeeked);
-    try{ videoEl.currentTime=0; }catch(e){ fail(e); return; }
-    setTimeout(()=>{ if(!began){ videoEl.removeEventListener('seeked',onSeeked); begin(); } },800); // already at 0: no seeked event
+    }catch(e){ fail(e); return; }
   });
 }
 $('expBtn').onclick=async()=>{
   if(exporting||!videoEl.videoWidth)return;
   exporting=true; $('expBtn').disabled=true; $('dlZone').innerHTML='';
-  let aud=null;
   try{
-    aud=exportAudio();
-    const stream=new MediaStream([...canvas.captureStream(60).getVideoTracks(),...aud.tracks]);
+    // reset playback to a clean state BEFORE recording: paused at 0, never 'ended'
+    videoEl.pause();
+    if(videoEl.currentTime>0.05||videoEl.ended){
+      await new Promise(res=>{
+        const to=setTimeout(res,1500);
+        videoEl.addEventListener('seeked',()=>{clearTimeout(to);res();},{once:true});
+        try{videoEl.currentTime=0;}catch(e){clearTimeout(to);res();}
+      });
+    }
     const [resW,resH]=exportSize();
     const bps=+$('br').value*1000000;
     const fmt=$('fmtSel').value;
@@ -433,7 +438,11 @@ $('expBtn').onclick=async()=>{
     const expectedMin=origSize>0?origSize*0.6:0;
     let blob=null, ext='mp4', lab=fmt==='hevc'?'HEVC':'MP4', best=null;
     for(const [mime,e,l] of cands){
-      const chunks=await renderPass(stream,mime,bps,resW,resH,saneDur);
+      const aud=exportAudio(); // fresh audio per pass: no stale timestamps, ever
+      const stream=new MediaStream([...canvas.captureStream(60).getVideoTracks(),...aud.tracks]);
+      let chunks=[];
+      try{ chunks=await renderPass(stream,mime,bps,resW,resH,saneDur); }
+      finally{ try{aud.stop();}catch(_){} try{stream.getTracks().forEach(t=>t.stop());}catch(_){} }
       videoEl.pause();
       const b=new Blob(chunks,{type:mime.split(';')[0]});
       if(b.size&&(!best||b.size>best.blob.size))best={blob:b,ext:e,lab:l};
@@ -451,7 +460,6 @@ $('expBtn').onclick=async()=>{
     $('dlZone').appendChild(a); a.click();
     msg('Done — '+lab+' '+resW+'×'+resH+' saved ✓ ('+mb+' MB)','ok');
   }catch(e){msg('Export failed: '+e.message,'err');}
-  try{if(aud)aud.stop();}catch(e){}
   exporting=false; $('expBtn').disabled=false; videoEl.onended=null;
 };
 
