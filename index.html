@@ -506,7 +506,7 @@ function handleVideo(f){
     refreshLUTThumbs();
     populateRes(); updateExportSummary();
     $('#exportInfo').textContent='Renders every frame with the LUT at '+videoEl.videoWidth+'×'+videoEl.videoHeight
-      +' ('+(pickMime().ext==='mp4'?'MP4 H.264':'WebM VP9')+' container, original audio kept).';
+      +' ('+((mimeCandidates('auto')[0]||[])[2]||'WebM')+' container, original audio kept).';
     drawFrame();
   };
   videoEl.onerror=()=>setStatus($('#videoInfo'),'Could not play this video format in your browser.','err');
@@ -522,10 +522,15 @@ $('#seek').oninput=e=>{ if(videoEl.duration) videoEl.currentTime=e.target.value/
 videoEl.addEventListener('seeked',()=>{ clearTimeout(thumbTimer); thumbTimer=setTimeout(refreshLUTThumbs,600); });
 
 /* ================= export ================= */
-function pickMime(){
-  const c=[['video/mp4','mp4'],['video/webm;codecs=vp9','webm'],['video/webm;codecs=vp8','webm'],['video/webm','webm']];
-  for(const [m,ext] of c){ try{ if(window.MediaRecorder&&MediaRecorder.isTypeSupported(m)) return {mime:m,ext}; }catch(e){} }
-  return {mime:'',ext:'webm'};
+function mimeCandidates(fmt){
+  const list=[['video/mp4','mp4','MP4 (H.264)'],
+    ['video/webm;codecs=h264','webm','WebM (H.264)'],
+    ['video/webm;codecs=vp9','webm','WebM (VP9)'],
+    ['video/webm;codecs=vp8','webm','WebM (VP8)'],
+    ['video/webm','webm','WebM']];
+  const ok=list.filter(([m])=>{ try{ return window.MediaRecorder&&MediaRecorder.isTypeSupported(m); }catch(e){ return false; } });
+  if(fmt==='webm') return ok.filter(([m])=>m.indexOf('video/webm')===0);
+  return ok; // 'mp4' and 'auto': real MP4 first, then working fallbacks
 }
 let exporting=false, actx=null, mediaSrc=null;
 async function doExport(){
@@ -553,35 +558,45 @@ async function doExport(){
     videoEl.muted=false; videoEl.volume=1;
     const vstream=canvas.captureStream(60);
     const stream=new MediaStream([...vstream.getVideoTracks(),...audioTracks]);
-    let {mime,ext}=pickMime();
-    if(p.fmt==='mp4'&&MediaRecorder.isTypeSupported('video/mp4')){ mime='video/mp4'; ext='mp4'; }
-    if(p.fmt==='webm'&&MediaRecorder.isTypeSupported('video/webm')){ mime='video/webm'; ext='webm'; }
     const bps=p.bps;
-    const rec=new MediaRecorder(stream, mime?{mimeType:mime,videoBitsPerSecond:bps}:{videoBitsPerSecond:bps});
-    const chunks=[]; rec.ondataavailable=e=>{ if(e.data&&e.data.size) chunks.push(e.data); };
-    setStatus($('#exportStatus'),'Rendering… 0%');
-    videoEl.currentTime=0;
-    await new Promise((resolve,reject)=>{
+    const cands=mimeCandidates(p.fmt);
+    if(!cands.length) throw new Error('No supported video encoder in this browser');
+    // render one full pass with a given mime; resolves with the recorded chunks
+    const renderOnce=(mime)=>new Promise((resolve,reject)=>{
+      const chunks=[];
+      const rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:bps});
+      rec.ondataavailable=e=>{ if(e.data&&e.data.size) chunks.push(e.data); };
       let done=false;
-      const finish=()=>{ if(done)return; done=true; try{rec.stop();}catch(e){} resolve(); };
-      rec.onstop=()=>{ done=true; resolve(); };
-      rec.onerror=e=>{ done=true; reject(new Error('Encoder error')); };
+      const finish=()=>{ if(done) return; done=true; try{rec.stop();}catch(e){} };
+      rec.onstop=()=>{ done=true; resolve(chunks); };
+      rec.onerror=()=>{ done=true; reject(new Error('Encoder error')); };
       videoEl.onended=finish;
       setTimeout(()=>{ if(rec.state==='recording') finish(); }, (videoEl.duration||60)*1000+8000);
+      setStatus($('#exportStatus'),'Rendering… 0%');
+      videoEl.currentTime=0;
       rec.start(250);
       videoEl.play().catch(reject);
       const tick=()=>{ if(!done&&videoEl.duration) setStatus($('#exportStatus'),'Rendering… '+Math.round(videoEl.currentTime/videoEl.duration*100)+'%'); };
       videoEl.addEventListener('timeupdate',tick);
     });
-    const blob=new Blob(chunks,{type:mime?mime.split(';')[0]:'video/webm'});
-    if(!blob.size) throw new Error('Export produced an empty file');
+    // try encoders in order until one produces a real file
+    let blob=null, usedExt='webm', usedLabel='', fellBack=false;
+    for(let i=0;i<cands.length;i++){
+      const [mime,ext,label]=cands[i];
+      if(i>0){ fellBack=true; setStatus($('#exportStatus'),'Trying '+label+'…'); }
+      const chunks=await renderOnce(mime);
+      videoEl.pause();
+      blob=new Blob(chunks,{type:mime.split(';')[0]});
+      if(blob.size){ usedExt=ext; usedLabel=label; break; }
+    }
+    if(!blob||!blob.size) throw new Error('Export produced an empty file');
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
-    a.href=url; a.download='reshi-lut-'+Date.now()+'.'+ext;
+    a.href=url; a.download='reshi-lut-'+Date.now()+'.'+usedExt;
     a.className='btn'; a.style.cssText='display:inline-block;text-decoration:none;margin-top:6px';
-    a.textContent='⬇ Download '+(ext==='mp4'?'MP4':'WebM')+' ('+(blob.size/1048576).toFixed(1)+' MB)';
+    a.textContent='⬇ Download '+(usedExt==='mp4'?'MP4':'WebM')+' ('+(blob.size/1048576).toFixed(1)+' MB)';
     $('#dlZone').appendChild(a); a.click();
-    setStatus($('#exportStatus'),'Done — your graded video is ready.','ok');
+    setStatus($('#exportStatus'),'Done — '+usedLabel+' ready.'+(fellBack&&p.fmt==='mp4'?' (MP4 encoder produced no data here, used '+usedLabel+' instead.)':''),'ok');
   }catch(e){
     setStatus($('#exportStatus'),'Export failed: '+e.message,'err');
   }finally{
@@ -609,7 +624,7 @@ function populateRes(){
 function updateExportSummary(){
   if(!videoEl.videoWidth) return;
   const p=exportParams();
-  const cont=p.fmt==='auto'?(pickMime().ext==='mp4'?'MP4 (H.264)':'WebM (VP9)'):p.fmt.toUpperCase();
+  const cont=p.fmt==='auto'?(((mimeCandidates('auto')[0]||[])[2])||'WebM'):p.fmt.toUpperCase();
   $('#exportSummary').innerHTML='🎞 <b>'+p.w+'×'+p.h+'</b> • '+cont+' • <b>'+(p.bps/1000000).toFixed(0)+' Mbps</b> • LUT baked into every frame • original audio kept';
 }
 ['resSel','fmtSel','brSel'].forEach(id=>$('#'+id).addEventListener('change',updateExportSummary));
