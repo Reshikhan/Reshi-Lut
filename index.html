@@ -134,7 +134,7 @@ function parseCube(txt){
 
 /* ---------- WebGL ---------- */
 let gl, texV, texL, U={}, glReady=false, hasLUT=false;
-let intensity=1, showOrig=false, active='__orig';
+let intensity=1, showOrig=false, active='__orig', origBps=0;
 const luts=[]; // {name, lut}
 
 function initGL(){
@@ -265,6 +265,7 @@ function loadVideo(f){
   videoEl.onloadedmetadata=()=>{
     $('uploadCard').hidden=true; $('studio').hidden=false;
     canvas.width=videoEl.videoWidth; canvas.height=videoEl.videoHeight;
+    origBps=(videoEl.duration>0&&f.size>0)?(f.size*8/videoEl.duration):0; // original bitrate → export matches it
     selectLUT(active);
     videoEl.play().catch(()=>{});
     msg('Tap a LUT to try it 👇');
@@ -307,7 +308,7 @@ function renderPass(stream,mime,bps){
     rec.onerror=()=>{done=true;reject(new Error('encoder error'));};
     videoEl.onended=finish;
     setTimeout(()=>{if(rec.state==='recording')finish();},(videoEl.duration||60)*1000+8000);
-    msg('Rendering… 0%'); $('prog').hidden=false; $('bar').style.width='0%';
+    msg('Rendering at original quality ('+(bps/1000000).toFixed(1)+' Mbps)… 0%'); $('prog').hidden=false; $('bar').style.width='0%';
     videoEl.currentTime=0;
     rec.start(250);
     videoEl.play().catch(reject);
@@ -330,7 +331,8 @@ $('expBtn').onclick=async()=>{
       audioTracks=dest.stream.getAudioTracks();
     }catch(e){}
     const stream=new MediaStream([...canvas.captureStream(30).getVideoTracks(),...audioTracks]);
-    const bps=Math.round(canvas.width*canvas.height*30*0.08);
+    // match the ORIGINAL video's bitrate (+25% headroom so re-encoding stays invisible) → same size & quality
+    const bps=origBps>0?Math.min(120000000,Math.round(origBps*1.25)):Math.round(canvas.width*canvas.height*30*0.08);
     const cands=encCandidates();
     if(!cands.length)throw new Error('no video encoder in this browser');
     let blob=null,ext='webm',lab='WebM';
