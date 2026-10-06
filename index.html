@@ -301,8 +301,7 @@ function drawFrame(){
 }
 (function loop(){
   drawFrame();
-  if(videoEl.videoWidth && videoEl.requestVideoFrameCallback) videoEl.requestVideoFrameCallback(loop);
-  else requestAnimationFrame(loop);
+  requestAnimationFrame(loop);
 })();
 
 /* ================= LUT library ================= */
