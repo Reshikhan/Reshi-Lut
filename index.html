@@ -96,6 +96,15 @@
   details p{color:var(--muted); font-size:.9rem}
   footer{text-align:center; color:var(--muted); font-size:.82rem; margin-top:34px}
   .hidden{display:none !important}
+  .preview-wrap{position:relative; border-radius:14px; overflow:hidden; background:#000; box-shadow:var(--shadow)}
+  #preview{width:100%; display:block}
+  .split-handle{position:absolute; top:0; bottom:0; width:3px; background:#fff; box-shadow:0 0 10px rgba(0,0,0,.7); cursor:ew-resize; display:none; z-index:3; touch-action:none}
+  .split-handle::after{content:'◂ ▸'; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:#fff; color:#111; font-size:.6rem; font-weight:800; border-radius:99px; padding:5px 7px; white-space:nowrap}
+  .split-tag{position:absolute; top:10px; font-size:.66rem; font-weight:800; letter-spacing:1.5px; background:rgba(0,0,0,.55); color:#fff; padding:4px 10px; border-radius:99px; display:none; z-index:2}
+  .split-tag.left{left:10px} .split-tag.right{right:10px}
+  .lut-grid{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}
+  .export-summary{font-size:.85rem; color:var(--muted); background:var(--input-bg); border:1px solid var(--input-border); border-radius:10px; padding:10px 14px; margin-top:12px}
+  .export-summary b{color:var(--ink)}
   @media(max-width:560px){ .card{padding:16px} }
 </style>
 </head>
@@ -135,9 +144,15 @@
   <section class="card hidden" id="previewCard">
     <h2>3 &nbsp;Preview</h2>
     <p class="sub">Real-time grade. Press play, scrub anywhere — what you see is what exports.</p>
-    <canvas id="preview"></canvas>
+    <div class="preview-wrap" id="previewWrap">
+      <canvas id="preview"></canvas>
+      <span class="split-tag left" id="tagL">ORIGINAL</span>
+      <span class="split-tag right" id="tagR">GRADED</span>
+      <div class="split-handle" id="splitHandle"></div>
+    </div>
     <div class="row" style="margin-top:12px">
       <button class="btn ghost" id="playBtn">▶ Play</button>
+      <button class="btn ghost" id="splitBtn">◂ ▸ Split compare: OFF</button>
       <label class="field" style="flex:1">Seek <input type="range" id="seek" min="0" max="1000" value="0" style="width:100%"></label>
     </div>
   </section>
@@ -146,14 +161,16 @@
     <h2>4 &nbsp;Export</h2>
     <p class="sub" id="exportInfo">Renders every frame with the LUT at your video's native resolution.</p>
     <div class="row">
-      <label class="field">Quality
-        <select id="quality">
-          <option value="high" selected>Original resolution • High bitrate (recommended)</option>
-          <option value="medium">Original resolution • Medium bitrate (smaller file)</option>
-        </select>
-      </label>
+      <label class="field">Resolution <select id="resSel"></select></label>
+      <label class="field">Format <select id="fmtSel">
+        <option value="auto" selected>Auto (best)</option><option value="mp4">MP4</option><option value="webm">WebM</option>
+      </select></label>
+      <label class="field">Bitrate <select id="brSel">
+        <option value="high" selected>High</option><option value="medium">Medium</option><option value="low">Low</option>
+      </select></label>
       <button class="btn" id="exportBtn">⬇ Export video</button>
     </div>
+    <div class="export-summary" id="exportSummary"></div>
     <div class="progress" id="progWrap"><i id="progBar"></i></div>
     <div class="status" id="exportStatus"></div>
     <div id="dlZone" style="margin-top:10px"></div>
@@ -176,7 +193,7 @@
 /* ================= theme ================= */
 const themeBtn = document.getElementById('themeToggle');
 function applyTheme(m){ document.body.classList.toggle('dark', m==='dark'); themeBtn.textContent = m==='dark' ? '☀️ Light' : '🌙 Dark'; try{localStorage.setItem('rlut-theme',m)}catch(e){} }
-let savedTheme='light'; try{ savedTheme = localStorage.getItem('rlut-theme') || 'light'; }catch(e){}
+let savedTheme='dark'; try{ savedTheme = localStorage.getItem('rlut-theme') || 'light'; }catch(e){}
 applyTheme(savedTheme);
 themeBtn.onclick = () => applyTheme(document.body.classList.contains('dark') ? 'light' : 'dark');
 
@@ -211,7 +228,7 @@ let lutSize=0, hasLUT=false, intensity=1.0, bypass=false, glReady=false;
 
 const VS = 'attribute vec2 p; varying vec2 uv; void main(){ uv=vec2(p.x*0.5+0.5, 0.5-p.y*0.5); gl_Position=vec4(p,0.0,1.0); }';
 const FS = 'precision mediump float; varying vec2 uv;\n'
-+'uniform sampler2D videoTex, lutTex; uniform float lutN, intensity, useLUT;\n'
++'uniform sampler2D videoTex, lutTex; uniform float lutN, intensity, useLUT, split;\n'
 +'vec3 applyLUT(vec3 c){\n'
 +'  vec3 s = clamp(c,0.0,1.0)*(lutN-1.0);\n'
 +'  float b0=floor(s.b), b1=min(b0+1.0,lutN-1.0);\n'
@@ -221,7 +238,9 @@ const FS = 'precision mediump float; varying vec2 uv;\n'
 +'  return mix(c0,c1,fract(s.b));\n'
 +'}\n'
 +'void main(){ vec3 c=texture2D(videoTex,uv).rgb; vec3 g = useLUT>0.5 ? applyLUT(c) : c;\n'
-+'  gl_FragColor=vec4(mix(c,g,intensity),1.0); }';
++'  vec3 fin=mix(c,g,intensity);\n'
++'  if(split>=0.0){ fin = uv.x < split ? c : fin; }\n'
++'  gl_FragColor=vec4(fin,1.0); }';
 
 function compileShader(type, src){
   const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
@@ -248,8 +267,9 @@ function initGL(){
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
-  gl.uniform1i(gl.getUniformLocation(prog,'videoTex'), 0);
-  gl.uniform1i(gl.getUniformLocation(prog,'lutTex'), 1);
+  const U={}; ['videoTex','lutTex','lutN','intensity','useLUT','split'].forEach(n=>U[n]=gl.getUniformLocation(prog,n));
+  window.__U=U;
+  gl.uniform1i(U.videoTex, 0); gl.uniform1i(U.lutTex, 1); gl.uniform1f(U.split, -1);
   glReady = true;
 }
 function uploadLUT(lut){
@@ -263,19 +283,20 @@ function uploadLUT(lut){
   gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texLUT);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, n, n*n, 0, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
   lutSize = n; hasLUT = true;
-  gl.uniform1f(gl.getUniformLocation(prog,'lutN'), n);
-  gl.uniform1f(gl.getUniformLocation(prog,'useLUT'), 1);
+  gl.uniform1f(window.__U.lutN, n);
+  gl.uniform1f(window.__U.useLUT, 1);
 }
+let outW=0, outH=0, splitX=-1;
 function drawFrame(){
   if(!glReady || !videoEl.videoWidth) return;
-  if(canvas.width !== videoEl.videoWidth || canvas.height !== videoEl.videoHeight){
-    canvas.width = videoEl.videoWidth; canvas.height = videoEl.videoHeight;
-  }
+  const tw=outW||videoEl.videoWidth, th=outH||videoEl.videoHeight;
+  if(canvas.width!==tw || canvas.height!==th){ canvas.width=tw; canvas.height=th; }
   gl.viewport(0, 0, canvas.width, canvas.height);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texVideo);
   try{ gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoEl); }
   catch(e){ return; }
-  gl.uniform1f(gl.getUniformLocation(prog,'intensity'), bypass ? 0 : intensity);
+  gl.uniform1f(window.__U.intensity, bypass ? 0 : intensity);
+  gl.uniform1f(window.__U.split, splitX);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 (function loop(){
@@ -314,23 +335,28 @@ async function getLUT(id){
   const txt = await (await fetch('luts/'+id+'.cube')).text();
   return lutCache[id] = parseCube(txt);
 }
-let pendingLUT='teal-orange', pendingCustom=null;
+let pendingLUT='teal-orange', pendingCustom=null, lutToken=0;
 function selectLUT(id, btn, customLUT){
   document.querySelectorAll('.lut-card').forEach(b=>b.classList.remove('active'));
   if(btn) btn.classList.add('active');
   pendingLUT=id; pendingCustom=customLUT||null;
   if(glReady) applySelectedLUT();
 }
-async function applySelectedLUT(){
+function applySelectedLUT(){ if(glReady) renderLUT(pendingLUT, pendingCustom); }
+async function renderLUT(id, custom){
+  const t=++lutToken;
   try{
-    if(pendingLUT==='none'){ hasLUT=false; gl.uniform1f(gl.getUniformLocation(prog,'useLUT'),0); }
+    if(id==='none'){ hasLUT=false; gl.uniform1f(window.__U.useLUT,0); }
     else{
-      const lut = pendingCustom || await getLUT(pendingLUT);
+      const lut = custom || await getLUT(id);
+      if(t!==lutToken) return;
       uploadLUT(lut);
     }
     setStatus($('#lutStatus'), '', '');
   }catch(e){ setStatus($('#lutStatus'), 'Could not load LUT: '+e.message, 'err'); }
 }
+function hoverLUT(id, custom){ if(glReady) renderLUT(id, custom); }
+function unhoverLUT(){ applySelectedLUT(); }
 (function buildGrid(){
   const grid = $('#lutGrid');
   BUILTIN.forEach(b=>{
@@ -339,7 +365,12 @@ async function applySelectedLUT(){
     btn.innerHTML = b.id==='none'
       ? '<div class="nonebox">🚫</div><span>'+b.name+'</span>'
       : '<img class="lut-thumb" loading="lazy" src="'+THUMBS[b.id]+'" alt="'+b.name+'"><span>'+b.name+'</span>';
+    btn.dataset.id=b.id;
     btn.onclick = ()=>selectLUT(b.id, btn);
+    if(b.id!=='none'){
+      btn.onmouseenter=()=>{ if(videoEl.videoWidth && b.id!==pendingLUT) hoverLUT(b.id); };
+      btn.onmouseleave=()=>unhoverLUT();
+    }
     grid.appendChild(btn);
     if(b.id==='teal-orange'){ activeBtn = btn; }
   });
@@ -388,6 +419,9 @@ $('#lutFile').onchange = async e=>{
     const name=f.name.replace(/\.cube$/i,'');
     btn.innerHTML='<img class="lut-thumb" alt=""><span>'+name.replace(/</g,'&lt;')+'</span>';
     btn.querySelector('img').src = lutThumbnail(lut);
+    btn.dataset.id='custom'; btn._custom=lut;
+    btn.onmouseenter=()=>{ if(videoEl.videoWidth) hoverLUT('custom', lut); };
+    btn.onmouseleave=()=>unhoverLUT();
     btn.onclick=()=>selectLUT('custom', btn, lut);
     $('#lutGrid').appendChild(btn);
     selectLUT('custom', btn, lut);
@@ -396,9 +430,58 @@ $('#lutFile').onchange = async e=>{
   e.target.value='';
 };
 
+/* live LUT thumbnails rendered from the user's own video frame */
+let thumbTimer=null;
+function refreshLUTThumbs(){
+  if(!videoEl.videoWidth) return;
+  const W=160,H=90;
+  const cv=document.createElement('canvas'); cv.width=W; cv.height=H;
+  const ctx=cv.getContext('2d');
+  const vw=videoEl.videoWidth, vh=videoEl.videoHeight, s=Math.max(W/vw,H/vh);
+  ctx.drawImage(videoEl,(W-vw*s)/2,(H-vh*s)/2,vw*s,vh*s);
+  let img; try{ img=ctx.getImageData(0,0,W,H).data; }catch(e){ return; }
+  document.querySelectorAll('.lut-card').forEach(card=>{
+    const id=card.dataset.id; if(!id||id==='none') return;
+    (async()=>{
+      try{
+        const lut = card._custom || await getLUT(id);
+        const o=new Uint8ClampedArray(W*H*4);
+        for(let i=0;i<W*H;i++){
+          const t=trilinear(lut,img[i*4]/255,img[i*4+1]/255,img[i*4+2]/255);
+          o[i*4]=t[0]*255; o[i*4+1]=t[1]*255; o[i*4+2]=t[2]*255; o[i*4+3]=255;
+        }
+        const c2=document.createElement('canvas'); c2.width=W; c2.height=H;
+        c2.getContext('2d').putImageData(new ImageData(o,W,H),0,0);
+        const im=card.querySelector('img'); if(im) im.src=c2.toDataURL('image/jpeg',0.72);
+      }catch(e){}
+    })();
+  });
+}
 /* intensity + compare */
 $('#intensity').oninput = e=>{ intensity=e.target.value/100; $('#intVal').textContent=e.target.value+'%'; };
 $('#compareBtn').onclick = e=>{ bypass=!bypass; e.target.textContent='Compare: '+(bypass?'ON':'OFF'); e.target.classList.toggle('on',bypass); };
+/* split-view drag */
+function positionHandle(){ $('#splitHandle').style.left='calc('+(splitX*100)+'% - 2px)'; }
+$('#splitBtn').onclick=e=>{
+  const on=splitX<0; splitX=on?0.5:-1;
+  e.target.textContent='◂ ▸ Split compare: '+(on?'ON':'OFF');
+  e.target.classList.toggle('on',on);
+  const d=on?'block':'none';
+  $('#splitHandle').style.display=d; $('#tagL').style.display=d; $('#tagR').style.display=d;
+  if(on) positionHandle();
+};
+(function(){
+  const handle=$('#splitHandle'); let dragging=false;
+  handle.addEventListener('pointerdown',e=>{dragging=true;try{handle.setPointerCapture(e.pointerId);}catch(x){}});
+  handle.addEventListener('pointermove',e=>{
+    if(!dragging)return;
+    const r=$('#previewWrap').getBoundingClientRect();
+    splitX=Math.min(0.98,Math.max(0.02,(e.clientX-r.left)/r.width));
+    positionHandle();
+  });
+  handle.addEventListener('pointerup',()=>dragging=false);
+  handle.addEventListener('pointercancel',()=>dragging=false);
+})();
 
 /* ================= video upload ================= */
 let videoURL=null;
@@ -421,6 +504,8 @@ function handleVideo(f){
       +' • '+Math.floor(d/60)+':'+String(d%60).padStart(2,'0')+' • '+(f.size/1048576).toFixed(1)+' MB';
     for(const id of ['lutCard','previewCard','exportCard']) $('#'+id).classList.remove('hidden');
     applySelectedLUT();
+    refreshLUTThumbs();
+    populateRes(); updateExportSummary();
     $('#exportInfo').textContent='Renders every frame with the LUT at '+videoEl.videoWidth+'×'+videoEl.videoHeight
       +' ('+(pickMime().ext==='mp4'?'MP4 H.264':'WebM VP9')+' container, original audio kept).';
     drawFrame();
@@ -435,6 +520,7 @@ videoEl.ontimeupdate=()=>{
   if(exporting) $('#progBar').style.width=(videoEl.currentTime/videoEl.duration*100)+'%';
 };
 $('#seek').oninput=e=>{ if(videoEl.duration) videoEl.currentTime=e.target.value/1000*videoEl.duration; };
+videoEl.addEventListener('seeked',()=>{ clearTimeout(thumbTimer); thumbTimer=setTimeout(refreshLUTThumbs,600); });
 
 /* ================= export ================= */
 function pickMime(){
@@ -450,8 +536,8 @@ async function doExport(){
   const btn=$('#exportBtn'); btn.disabled=true;
   $('#dlZone').innerHTML=''; $('#progWrap').style.display='block'; $('#progBar').style.width='0%';
   setStatus($('#exportStatus'),'Preparing export — keep this tab open…');
-  const vw=videoEl.videoWidth, vh=videoEl.videoHeight;
-  canvas.width=vw; canvas.height=vh;
+  const p=exportParams();
+  outW=p.w; outH=p.h; canvas.width=p.w; canvas.height=p.h;
   const prevMuted=videoEl.muted, prevVol=videoEl.volume;
   try{
     // audio: tap element audio into the recording (element itself stays audible)
@@ -468,9 +554,10 @@ async function doExport(){
     videoEl.muted=false; videoEl.volume=1;
     const vstream=canvas.captureStream(60);
     const stream=new MediaStream([...vstream.getVideoTracks(),...audioTracks]);
-    const {mime,ext}=pickMime();
-    const high=$('#quality').value==='high';
-    const bps=Math.round(vw*vh*30*(high?0.12:0.06));
+    let {mime,ext}=pickMime();
+    if(p.fmt==='mp4'&&MediaRecorder.isTypeSupported('video/mp4')){ mime='video/mp4'; ext='mp4'; }
+    if(p.fmt==='webm'&&MediaRecorder.isTypeSupported('video/webm')){ mime='video/webm'; ext='webm'; }
+    const bps=p.bps;
     const rec=new MediaRecorder(stream, mime?{mimeType:mime,videoBitsPerSecond:bps}:{videoBitsPerSecond:bps});
     const chunks=[]; rec.ondataavailable=e=>{ if(e.data&&e.data.size) chunks.push(e.data); };
     setStatus($('#exportStatus'),'Rendering… 0%');
@@ -499,11 +586,34 @@ async function doExport(){
   }catch(e){
     setStatus($('#exportStatus'),'Export failed: '+e.message,'err');
   }finally{
-    exporting=false; btn.disabled=false;
+    exporting=false; btn.disabled=false; outW=0; outH=0;
     videoEl.muted=prevMuted; videoEl.volume=prevVol;
     videoEl.onended=null;
   }
 }
+function exportParams(){
+  const vw=videoEl.videoWidth, vh=videoEl.videoHeight;
+  let w=vw,h=vh; const r=$('#resSel').value;
+  if(r==='1080p'){ w=1920; h=Math.round(vh*1920/vw); }
+  if(r==='720p'){ w=1280; h=Math.round(vh*1280/vw); }
+  const f=$('#brSel').value==='high'?0.12:$('#brSel').value==='medium'?0.06:0.03;
+  return {w,h,fmt:$('#fmtSel').value,bps:Math.round(w*h*30*f)};
+}
+function populateRes(){
+  const vw=videoEl.videoWidth, vh=videoEl.videoHeight, rs=$('#resSel');
+  rs.innerHTML='';
+  const opts=[['orig','Original '+vw+'×'+vh]];
+  if(vw>1920) opts.push(['1080p','1080p (1920×'+Math.round(vh*1920/vw)+')']);
+  if(vw>1280) opts.push(['720p','720p (1280×'+Math.round(vh*1280/vw)+')']);
+  opts.forEach(([v,t])=>{ const o=document.createElement('option'); o.value=v; o.textContent=t; rs.appendChild(o); });
+}
+function updateExportSummary(){
+  if(!videoEl.videoWidth) return;
+  const p=exportParams();
+  const cont=p.fmt==='auto'?(pickMime().ext==='mp4'?'MP4 (H.264)':'WebM (VP9)'):p.fmt.toUpperCase();
+  $('#exportSummary').innerHTML='🎞 <b>'+p.w+'×'+p.h+'</b> • '+cont+' • <b>'+(p.bps/1000000).toFixed(0)+' Mbps</b> • LUT baked into every frame • original audio kept';
+}
+['resSel','fmtSel','brSel'].forEach(id=>$('#'+id).addEventListener('change',updateExportSummary));
 $('#exportBtn').onclick=doExport;
 </script>
 </body>
