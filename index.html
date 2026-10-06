@@ -332,8 +332,8 @@ $('expBtn').onclick=async()=>{
       audioTracks=dest.stream.getAudioTracks();
     }catch(e){}
     const stream=new MediaStream([...canvas.captureStream(30).getVideoTracks(),...audioTracks]);
-    // match the ORIGINAL video's bitrate (+25% headroom so re-encoding stays invisible) → same size & quality
-    const bps=origBps>0?Math.min(120000000,Math.round(origBps*1.25)):Math.round(canvas.width*canvas.height*30*0.08);
+    // match the ORIGINAL video's bitrate exactly → same size & quality
+    const bps=origBps>0?Math.min(120000000,Math.round(origBps)):Math.round(canvas.width*canvas.height*30*0.08);
     const cands=encCandidates();
     if(!cands.length)throw new Error('no video encoder in this browser');
     // Some browsers (Chrome's MP4 recorder) ignore the requested bitrate and return a tiny file.
