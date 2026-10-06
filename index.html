@@ -28,6 +28,7 @@
   .trow button{flex:0 0 auto; width:52px; height:44px; font-size:1.2rem; border-radius:12px; border:1px solid #3b4770;
     background:#141c38; color:#fff; cursor:pointer}
   input[type=range]{flex:1; accent-color:#8b5cf6; height:32px}
+  select{flex:1; padding:10px 12px; border-radius:10px; border:1px solid #3b4770; background:#141c38; color:#eef2ff; font-size:.9rem}
   #chips{display:flex; flex-wrap:wrap; gap:8px}
   .chip{display:inline-flex; align-items:center; gap:6px; padding:10px 14px; border-radius:999px; cursor:pointer;
     border:1px solid #3b4770; background:#141c38; color:#eef2ff; font-size:.9rem; font-weight:600}
@@ -79,6 +80,26 @@
     </div>
 
     <button class="ghostbtn" id="cmpBtn">👁 Hold to see original</button>
+
+    <h2>Export</h2>
+    <div class="srow"><label for="resSel">Size</label>
+      <select id="resSel">
+        <option value="orig">Original</option>
+        <option value="1080">1080p</option>
+        <option value="1440">2K (1440p)</option>
+        <option value="2160">4K (2160p)</option>
+      </select>
+    </div>
+    <div class="srow"><label for="br">Quality</label>
+      <input type="range" id="br" min="1" max="100" value="12">
+      <label id="brVal">12 Mbps</label>
+    </div>
+    <div class="srow"><label for="fmtSel">Format</label>
+      <select id="fmtSel">
+        <option value="mp4">MP4 (H.264)</option>
+        <option value="hevc">HEVC (H.265)</option>
+      </select>
+    </div>
     <button class="bigbtn" id="expBtn" style="margin-top:12px">⬇ Save graded video</button>
     <div id="prog" hidden><div id="bar"></div></div>
     <div id="dlZone"></div>
@@ -262,17 +283,30 @@ function loadVideo(f){
   if(videoEl.src)URL.revokeObjectURL(videoEl.src);
   videoEl.src=URL.createObjectURL(f);
   videoEl.load();
+  setupAudio(); // hear the video (element audio is rerouted once tapped)
   videoEl.onloadedmetadata=()=>{
     $('uploadCard').hidden=true; $('studio').hidden=false;
     canvas.width=videoEl.videoWidth; canvas.height=videoEl.videoHeight;
-    origBps=(videoEl.duration>0&&f.size>0)?(f.size*8/videoEl.duration):0; // original bitrate → export matches it
+    origBps=(videoEl.duration>0&&f.size>0)?(f.size*8/videoEl.duration):0; // original bitrate
     origSize=f.size||0;
+    const mbps=Math.min(100,Math.max(1,Math.round(origBps/1000000)));
+    $('br').value=mbps; $('brVal').textContent=mbps+' Mbps';
     selectLUT(active);
     videoEl.play().catch(()=>{});
-    msg('Tap a LUT to try it 👇');
+    const d=Math.round(videoEl.duration);
+    msg('📹 '+videoEl.videoWidth+'×'+videoEl.videoHeight+' • '+d+'s — tap a LUT to try it 👇');
   };
   videoEl.onerror=()=>msg('Could not play this video on your device','err');
 }
+/* tap the element's audio: hear it on speakers + feed the recorder */
+function setupAudio(){
+  try{
+    actx=actx||new (window.AudioContext||window.webkitAudioContext)();
+    if(actx.state==='suspended')actx.resume();
+    if(!mediaSrc){ mediaSrc=actx.createMediaElementSource(videoEl); mediaSrc.connect(actx.destination); }
+  }catch(e){}
+}
+$('br').oninput=e=>{ $('brVal').textContent=e.target.value+' Mbps'; };
 $('playBtn').onclick=()=>{videoEl.paused?videoEl.play():videoEl.pause();};
 videoEl.onplay=()=>$('playBtn').textContent='⏸';
 videoEl.onpause=()=>$('playBtn').textContent='▶';
@@ -293,12 +327,24 @@ cmp.addEventListener('contextmenu',e=>e.preventDefault());
 
 /* ---------- export ---------- */
 let exporting=false, actx=null, mediaSrc=null;
-function encCandidates(){
-  const list=[['video/mp4','mp4','MP4'],['video/webm;codecs=h264','webm','WebM'],
-    ['video/webm;codecs=vp9','webm','WebM'],['video/webm;codecs=vp8','webm','WebM'],['video/webm','webm','WebM']];
+function encCandidates(fmt){
+  const mp4=[['video/mp4','mp4','MP4']];
+  const hevc=[['video/mp4;codecs=hvc1','mp4','HEVC'],['video/mp4;codecs=hev1','mp4','HEVC']];
+  const h264w=[['video/webm;codecs=h264','webm','WebM']];
+  const webm=[['video/webm;codecs=vp9','webm','WebM'],['video/webm;codecs=vp8','webm','WebM'],['video/webm','webm','WebM']];
+  const list=fmt==='hevc'?[...hevc,...mp4,...h264w,...webm]:[...mp4,...h264w,...webm];
   return list.filter(([m])=>{try{return window.MediaRecorder&&MediaRecorder.isTypeSupported(m)}catch(e){return false}});
 }
-function renderPass(stream,mime,bps){
+function exportSize(){
+  const vw=videoEl.videoWidth, vh=videoEl.videoHeight, t=$('resSel').value;
+  if(t==='orig')return[vw,vh];
+  const s=(+t)/Math.min(vw,vh); // target the short side: 1080 / 1440 / 2160
+  let w=Math.round(vw*s), h=Math.round(vh*s);
+  return [w-(w%2), h-(h%2)]; // encoders need even dimensions
+}
+/* one full render pass; stops on 'ended', on stalled playback (bad duration metadata),
+   or on a hard cap — never runs away to hours */
+function renderPass(stream,mime,bps,resW,resH,saneDur){
   return new Promise((resolve,reject)=>{
     const chunks=[];
     const rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:bps});
@@ -307,57 +353,66 @@ function renderPass(stream,mime,bps){
     const finish=()=>{if(done)return;done=true;try{rec.stop();}catch(e){}};
     rec.onstop=()=>{done=true;resolve(chunks);};
     rec.onerror=()=>{done=true;reject(new Error('encoder error'));};
+    let lastT=-1,lastMove=Date.now();
+    const tick=()=>{
+      if(done)return;
+      const t=videoEl.currentTime;
+      if(t>lastT+0.002){lastT=t;lastMove=Date.now();}
+      msg('Rendering at '+(bps/1000000).toFixed(0)+' Mbps… '+Math.round(Math.min(t,saneDur)/saneDur*100)+'%');
+      $('bar').style.width=(Math.min(t,saneDur)/saneDur*100)+'%';
+      if(isFinite(videoEl.duration)&&videoEl.duration>0&&t>=videoEl.duration-0.05)finish();
+      else if(t>0.5&&Date.now()-lastMove>3000)finish(); // stalled: duration metadata wrong
+    };
+    videoEl.addEventListener('timeupdate',tick);
     videoEl.onended=finish;
-    setTimeout(()=>{if(rec.state==='recording')finish();},(videoEl.duration||60)*1000+8000);
-    msg('Rendering at original quality ('+(bps/1000000).toFixed(1)+' Mbps)… 0%'); $('prog').hidden=false; $('bar').style.width='0%';
+    setTimeout(()=>{if(rec.state==='recording')finish();},saneDur*1000+10000);
+    msg('Rendering at '+(bps/1000000).toFixed(0)+' Mbps… 0%');
+    $('prog').hidden=false; $('bar').style.width='0%';
+    canvas.width=resW; canvas.height=resH;
     videoEl.currentTime=0;
     rec.start(250);
     videoEl.play().catch(reject);
-    const tick=()=>{if(!done&&videoEl.duration)msg('Rendering at '+(bps/1000000).toFixed(1)+' Mbps… '+Math.round(videoEl.currentTime/videoEl.duration*100)+'%');};
-    videoEl.addEventListener('timeupdate',tick);
   });
 }
 $('expBtn').onclick=async()=>{
   if(exporting||!videoEl.videoWidth)return;
   exporting=true; $('expBtn').disabled=true; $('dlZone').innerHTML='';
   try{
-    let audioTracks=[];
-    try{
-      actx=actx||new (window.AudioContext||window.webkitAudioContext)();
-      if(actx.state==='suspended')await actx.resume();
-      if(!mediaSrc)mediaSrc=actx.createMediaElementSource(videoEl);
-      const dest=actx.createMediaStreamDestination();
-      try{mediaSrc.disconnect();}catch(e){}
-      mediaSrc.connect(dest);
-      audioTracks=dest.stream.getAudioTracks();
-    }catch(e){}
-    const stream=new MediaStream([...canvas.captureStream(30).getVideoTracks(),...audioTracks]);
-    // match the ORIGINAL video's bitrate exactly → same size & quality
-    const bps=origBps>0?Math.min(120000000,Math.round(origBps)):Math.round(canvas.width*canvas.height*30*0.08);
-    const cands=encCandidates();
+    setupAudio();
+    const dest=actx.createMediaStreamDestination();
+    mediaSrc.connect(dest);
+    const audioTracks=dest.stream.getAudioTracks();
+    const stream=new MediaStream([...canvas.captureStream(60).getVideoTracks(),...audioTracks]);
+    const [resW,resH]=exportSize();
+    const bps=+$('br').value*1000000;
+    const fmt=$('fmtSel').value;
+    // sane duration: never trust a wild metadata value — cap by file size (assume ≥100kbps)
+    const d=videoEl.duration, maxPlausible=origSize>0?(origSize*8/100000):7200;
+    const saneDur=(isFinite(d)&&d>0)?Math.min(d,maxPlausible):Math.min(60,maxPlausible);
+    const cands=encCandidates(fmt);
     if(!cands.length)throw new Error('no video encoder in this browser');
-    // Some browsers (Chrome's MP4 recorder) ignore the requested bitrate and return a tiny file.
-    // So: render with each encoder, keep the first whose size is close to the original; else keep the biggest.
+    // try encoders in order; keep the first whose size is close to the original, else the biggest
     const expectedMin=origSize>0?origSize*0.6:0;
-    let blob=null, ext='webm', lab='WebM', best=null;
+    let blob=null, ext='mp4', lab=fmt==='hevc'?'HEVC':'MP4', best=null;
     for(const [mime,e,l] of cands){
-      const chunks=await renderPass(stream,mime,bps);
+      const chunks=await renderPass(stream,mime,bps,resW,resH,saneDur);
       videoEl.pause();
       const b=new Blob(chunks,{type:mime.split(';')[0]});
       if(b.size&&(!best||b.size>best.blob.size))best={blob:b,ext:e,lab:l};
-      if(b.size>=expectedMin&&expectedMin>0){blob=b;ext=e;lab=l;break;}
+      if(expectedMin>0&&b.size>=expectedMin){blob=b;ext=e;lab=l;break;}
       if(!expectedMin&&b.size){blob=b;ext=e;lab=l;break;}
       msg(l+' came out too small — trying a better encoder…');
     }
     if(!blob){ if(!best)throw new Error('encoder produced no data'); blob=best.blob;ext=best.ext;lab=best.lab; }
+    try{mediaSrc.disconnect(dest);}catch(e){}
     const mb=(blob.size/1048576).toFixed(1);
     const a=document.createElement('a');
     a.href=URL.createObjectURL(blob);
-    a.download='reshi-graded-'+Date.now()+'.'+ext;
+    a.download='reshi-graded-'+resW+'x'+resH+'-'+Date.now()+'.'+ext;
     a.className='dl';
-    a.textContent='⬇ Download '+ext.toUpperCase()+' ('+mb+' MB)';
+    a.textContent='⬇ Download '+lab+' '+resW+'×'+resH+' ('+mb+' MB)';
     $('dlZone').appendChild(a); a.click();
-    msg('Done — '+lab+' saved ✓ ('+mb+' MB)','ok');
+    msg('Done — '+lab+' '+resW+'×'+resH+' saved ✓ ('+mb+' MB)','ok');
   }catch(e){msg('Export failed: '+e.message,'err');}
   exporting=false; $('expBtn').disabled=false; videoEl.onended=null;
 };
