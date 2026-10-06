@@ -104,7 +104,7 @@
     <div id="dlZone"></div>
     <p id="msg"></p>
   </div>
-<p style="text-align:center;color:#5b6579;font-size:.7rem;margin-top:24px">v1.8</p>
+<p style="text-align:center;color:#5b6579;font-size:.7rem;margin-top:24px">v1.9</p>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -197,7 +197,7 @@ function initGL(){
   ['lutN','intensity','useLUT','bypass'].forEach(n=>U[n]=gl.getUniformLocation(pr,n));
   gl.uniform1f(U.intensity,1); gl.uniform1f(U.useLUT,0); gl.uniform1f(U.bypass,0);
   glReady=true;
-  (function loop(){ draw(); requestAnimationFrame(loop); })();
+  (function loop(){ try{draw();}catch(e){} requestAnimationFrame(loop); })();
 }
 function uploadLUT(lut){
   const n=lut.n, bytes=new Uint8Array(n*n*n*4);
@@ -358,30 +358,45 @@ function exportSize(){
   return [w-(w%2), h-(h%2)]; // encoders need even dimensions
 }
 /* one full render pass; stops on 'ended', on stalled playback (bad duration metadata),
-   or on a hard cap — never runs away to hours */
+   or on a hard cap — never runs away to hours.
+   If the tab loses focus mid-export, recording PAUSES and resumes when you're back,
+   so a throttled tab can never silently produce a broken file. */
 function renderPass(stream,mime,bps,resW,resH,saneDur){
-  return new Promise((resolve,reject)=>{
+  return new Promise(async(resolve,reject)=>{
     const chunks=[];
     const rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:bps});
     rec.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};
-    let done=false;
-    const finish=()=>{if(done)return;done=true;try{rec.stop();}catch(e){}};
-    rec.onstop=()=>{done=true;resolve(chunks);};
-    rec.onerror=()=>{done=true;reject(new Error('encoder error'));};
+    let done=false, hidden=false, hideT=0, pausedMs=0;
+    const t0=Date.now(), capMs=saneDur*1000+10000;
+    let wl=null;
+    const holdWake=async()=>{ try{ wl=await navigator.wakeLock.request('screen'); }catch(e){} };
+    const onVis=()=>{
+      if(done)return;
+      if(document.hidden){ hidden=true; hideT=Date.now(); try{rec.pause();}catch(e){} videoEl.pause(); msg('⏸ Paused — come back to this tab to continue…'); }
+      else{ if(hidden){ hidden=false; pausedMs+=Date.now()-hideT; try{rec.resume();}catch(e){} videoEl.play().catch(()=>{}); } holdWake(); }
+    };
+    const finish=()=>{ if(done)return; done=true;
+      document.removeEventListener('visibilitychange',onVis);
+      try{if(wl)wl.release();}catch(e){}
+      try{rec.stop();}catch(e){} };
+    rec.onstop=()=>{ finish(); resolve(chunks); };
+    rec.onerror=()=>{ done=true; document.removeEventListener('visibilitychange',onVis); reject(new Error('encoder error')); };
     let lastT=-1,lastMove=Date.now();
     const tick=()=>{
-      if(done)return;
+      if(done||hidden)return;
       const t=videoEl.currentTime;
       if(t>lastT+0.002){lastT=t;lastMove=Date.now();}
       msg('Rendering at '+(bps/1000000).toFixed(0)+' Mbps… '+Math.round(Math.min(t,saneDur)/saneDur*100)+'%');
       $('bar').style.width=(Math.min(t,saneDur)/saneDur*100)+'%';
-      if(isFinite(videoEl.duration)&&videoEl.duration>0&&t>=videoEl.duration-0.05)finish();
+      if(Date.now()-t0-pausedMs>capMs)finish();
+      else if(isFinite(videoEl.duration)&&videoEl.duration>0&&t>=videoEl.duration-0.05)finish();
       else if(t>0.5&&Date.now()-lastMove>3000)finish(); // stalled: duration metadata wrong
     };
+    document.addEventListener('visibilitychange',onVis);
     videoEl.addEventListener('timeupdate',tick);
     videoEl.onended=finish;
-    setTimeout(()=>{if(rec.state==='recording')finish();},saneDur*1000+10000);
-    msg('Rendering at '+(bps/1000000).toFixed(0)+' Mbps… 0%');
+    await holdWake();
+    msg('📌 Keep this tab open until done… 0%');
     $('prog').hidden=false; $('bar').style.width='0%';
     canvas.width=resW; canvas.height=resH;
     videoEl.currentTime=0;
