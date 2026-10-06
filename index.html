@@ -312,7 +312,7 @@ function renderPass(stream,mime,bps){
     videoEl.currentTime=0;
     rec.start(250);
     videoEl.play().catch(reject);
-    const tick=()=>{if(!done&&videoEl.duration)msg('Rendering… '+Math.round(videoEl.currentTime/videoEl.duration*100)+'%');};
+    const tick=()=>{if(!done&&videoEl.duration)msg('Rendering at '+(bps/1000000).toFixed(1)+' Mbps… '+Math.round(videoEl.currentTime/videoEl.duration*100)+'%');};
     videoEl.addEventListener('timeupdate',tick);
   });
 }
