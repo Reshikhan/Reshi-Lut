@@ -104,7 +104,7 @@
     <div id="dlZone"></div>
     <p id="msg"></p>
   </div>
-<p style="text-align:center;color:#5b6579;font-size:.7rem;margin-top:24px">v1.9</p>
+<p style="text-align:center;color:#5b6579;font-size:.7rem;margin-top:24px">v1.10</p>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -358,32 +358,27 @@ function exportSize(){
   return [w-(w%2), h-(h%2)]; // encoders need even dimensions
 }
 /* one full render pass; stops on 'ended', on stalled playback (bad duration metadata),
-   or on a hard cap — never runs away to hours.
+   or on a hard cap — never runs away to hours, never hangs silently.
    If the tab loses focus mid-export, recording PAUSES and resumes when you're back,
    so a throttled tab can never silently produce a broken file. */
 function renderPass(stream,mime,bps,resW,resH,saneDur){
-  return new Promise(async(resolve,reject)=>{
+  return new Promise((resolve,reject)=>{
     const chunks=[];
-    const rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:bps});
-    rec.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};
-    let done=false, hidden=false, hideT=0, pausedMs=0;
+    let rec=null, done=false, hidden=false, hideT=0, pausedMs=0, wl=null, capTimer=null;
     const t0=Date.now(), capMs=saneDur*1000+10000;
-    let wl=null;
-    const holdWake=async()=>{ try{ wl=await navigator.wakeLock.request('screen'); }catch(e){} };
+    const holdWake=()=>{ try{ navigator.wakeLock.request('screen').then(w=>{wl=w;}).catch(()=>{}); }catch(e){} };
+    const cleanup=()=>{ document.removeEventListener('visibilitychange',onVis);
+      try{if(wl)wl.release();}catch(e){} if(capTimer){clearTimeout(capTimer);capTimer=null;} };
+    const finish=()=>{ if(done)return; done=true; cleanup(); try{rec.stop();}catch(e){} };
+    const fail=e=>{ if(done)return; done=true; cleanup(); reject(e); };
     const onVis=()=>{
-      if(done)return;
+      if(done||!rec)return;
       if(document.hidden){ hidden=true; hideT=Date.now(); try{rec.pause();}catch(e){} videoEl.pause(); msg('⏸ Paused — come back to this tab to continue…'); }
       else{ if(hidden){ hidden=false; pausedMs+=Date.now()-hideT; try{rec.resume();}catch(e){} videoEl.play().catch(()=>{}); } holdWake(); }
     };
-    const finish=()=>{ if(done)return; done=true;
-      document.removeEventListener('visibilitychange',onVis);
-      try{if(wl)wl.release();}catch(e){}
-      try{rec.stop();}catch(e){} };
-    rec.onstop=()=>{ finish(); resolve(chunks); };
-    rec.onerror=()=>{ done=true; document.removeEventListener('visibilitychange',onVis); reject(new Error('encoder error')); };
     let lastT=-1,lastMove=Date.now();
     const tick=()=>{
-      if(done||hidden)return;
+      if(done||hidden||!rec)return;
       const t=videoEl.currentTime;
       if(t>lastT+0.002){lastT=t;lastMove=Date.now();}
       msg('Rendering at '+(bps/1000000).toFixed(0)+' Mbps… '+Math.round(Math.min(t,saneDur)/saneDur*100)+'%');
@@ -392,16 +387,31 @@ function renderPass(stream,mime,bps,resW,resH,saneDur){
       else if(isFinite(videoEl.duration)&&videoEl.duration>0&&t>=videoEl.duration-0.05)finish();
       else if(t>0.5&&Date.now()-lastMove>3000)finish(); // stalled: duration metadata wrong
     };
+    try{ rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:bps}); }
+    catch(e){ fail(e); return; }
+    rec.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};
+    rec.onstop=()=>{ finish(); resolve(chunks); };
+    rec.onerror=()=>fail(new Error('encoder error'));
     document.addEventListener('visibilitychange',onVis);
     videoEl.addEventListener('timeupdate',tick);
     videoEl.onended=finish;
-    await holdWake();
+    holdWake();
     msg('📌 Keep this tab open until done… 0%');
     $('prog').hidden=false; $('bar').style.width='0%';
     canvas.width=resW; canvas.height=resH;
-    videoEl.currentTime=0;
-    rec.start(250);
-    videoEl.play().catch(reject);
+    capTimer=setTimeout(()=>{ if(rec&&rec.state==='recording')finish(); },capMs); // hard cap, independent of events
+    // start recording only once the seek-to-0 has landed, so 'ended' state always restarts cleanly
+    let began=false;
+    const begin=()=>{ if(began||done)return; began=true;
+      try{ rec.start(250); }catch(e){ fail(e); return; }
+      videoEl.play().then(()=>{
+        setTimeout(()=>{ if(!done&&!hidden&&videoEl.paused&&videoEl.currentTime<0.05) fail(new Error('playback did not start')); },5000);
+      }).catch(fail);
+    };
+    const onSeeked=()=>{ videoEl.removeEventListener('seeked',onSeeked); begin(); };
+    videoEl.addEventListener('seeked',onSeeked);
+    try{ videoEl.currentTime=0; }catch(e){ fail(e); return; }
+    setTimeout(()=>{ if(!began){ videoEl.removeEventListener('seeked',onSeeked); begin(); } },800); // already at 0: no seeked event
   });
 }
 $('expBtn').onclick=async()=>{
