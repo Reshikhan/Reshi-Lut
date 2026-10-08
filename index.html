@@ -2351,7 +2351,11 @@ function canUseWebCodecs(){
   }catch(e){return false;}
 }
 async function pickAvcCodec(w,h){
-  const lvl=(w<=1280&&h<=720)?'1f':(w<=1920&&h<=1088)?'28':(w<=2560&&h<=1440)?'32':'33';
+  // Use max dimension so portrait (e.g. 1080x1920) gets the same level as landscape 1920x1080.
+  // Old code checked w/h separately and gave portrait 1080p Level 5.1 (4K tier),
+  // which Android hardware encoders reject -> "encoder error".
+  const m=Math.max(w,h);
+  const lvl=m<=1280?'1f':m<=1920?'28':m<=2560?'32':'33';
   for(const c of ['avc1.6400'+lvl,'avc1.4200'+lvl]){
     try{
       const s=await VideoEncoder.isConfigSupported({codec:c,width:w,height:h,bitrate:2e6,framerate:30});
