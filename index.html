@@ -2654,13 +2654,29 @@ async function exportWebCodecs(resW,resH,targetFps,videoBps){
         }catch(e){}
       };
 
-      /* --- capture loop: real video timestamps, never invented --- */
+      /* --- capture loop: frame-count timestamps (perfectly regular, immune to source stutter) --- */
       await seekTo(0);
       canvas.width=resW; canvas.height=resH;
       wcActive=true; // rAF loop stands down; onFrame drives draw() explicitly
-      const interval=targetFps>0?1e6/targetFps:0;
-      const kfEvery=Math.max(1,Math.round(targetFps>0?targetFps:30));
-      let nextTs=0,lastTs=-1,frames=0,firstMediaTs=null,lastTick=Date.now();
+      // Detect source FPS if "Original" requested (1s pre-roll)
+      let outFps=targetFps;
+      if(!outFps){
+        try{
+          msg('Detecting frame rate…');
+          const detected=await new Promise(res=>{
+            let n=0; const t0=performance.now();
+            const cb=()=>{ n++; if(performance.now()-t0<1000) videoEl.requestVideoFrameCallback(cb); else res(n); };
+            videoEl.requestVideoFrameCallback(cb);
+          });
+          // Round to nearest standard FPS
+          outFps=[24,25,30,50,60].reduce((a,b)=>Math.abs(b-detected)<Math.abs(a-detected)?b:a);
+          if(outFps<20||outFps>65) outFps=30;
+        }catch(e){ outFps=30; }
+        await seekTo(0);
+      }
+      const frameDurUs=Math.round(1e6/outFps);
+      const kfEvery=Math.max(1,Math.round(outFps));
+      let frames=0,lastMediaUs=-1,lastTick=Date.now();
       const useRVFC=typeof videoEl.requestVideoFrameCallback==='function';
 
       const onFrame=(now,meta)=>{
@@ -2668,33 +2684,36 @@ async function exportWebCodecs(resW,resH,targetFps,videoBps){
         if(document.hidden){fail(new Error('Tab was hidden — export stopped. Keep this tab open and try again.'));return;}
         try{
           const mediaUs=Math.round(meta.mediaTime*1e6);
-          if(firstMediaTs===null)firstMediaTs=mediaUs;
-          const ts=mediaUs-firstMediaTs;
-          if(ts>lastTs&&(interval===0||ts>=nextTs)){
-            // Backpressure: if encoder is behind, PAUSE video until it catches up
-            // (no frames dropped, no gaps — just takes longer; A/V stays in sync)
-            if(videoEnc.encodeQueueSize>15){
-              videoEl.pause();
-              msg('⏳ Encoder catching up… '+Math.round(ts/1e6/d*100)+'%');
-              const drain=async()=>{
-                while(videoEnc.encodeQueueSize>5&&!done){
-                  await new Promise(r=>setTimeout(r,120));
-                }
-                if(!done){
-                  try{ await videoEl.play(); }catch(e){}
-                  if(useRVFC)videoEl.requestVideoFrameCallback(onFrame);
-                }
-              };
-              drain();
-              return;
-            }
-            lastTs=ts;
-            draw();
-            const vf=new VideoFrame(canvas,{timestamp:ts,duration:Math.round(interval||33333)});
-            videoEnc.encode(vf,{keyFrame:frames%kfEvery===0});
-            vf.close(); frames++;
-            if(interval>0)nextTs=Math.max(nextTs+interval,ts+1);
+          // Skip if same frame as last time (dedupe)
+          if(mediaUs<=lastMediaUs){
+            if(useRVFC)videoEl.requestVideoFrameCallback(onFrame);
+            return;
           }
+          lastMediaUs=mediaUs;
+          // REGULAR timestamp from frame count — not from mediaTime!
+          // This guarantees smooth output even if source playback stutters.
+          const ts=frames*frameDurUs;
+          // Backpressure: if encoder is behind, PAUSE video until it catches up
+          // (no frames dropped, no gaps - just takes longer; A/V stays in sync)
+          if(videoEnc.encodeQueueSize>15){
+            videoEl.pause();
+            msg('Encoder catching up... '+Math.round(ts/1e6/d*100)+'%');
+            const drain=async()=>{
+              while(videoEnc.encodeQueueSize>5&&!done){
+                await new Promise(r=>setTimeout(r,120));
+              }
+              if(!done){
+                try{ await videoEl.play(); }catch(e){}
+                if(useRVFC)videoEl.requestVideoFrameCallback(onFrame);
+              }
+            };
+            drain();
+            return;
+          }
+          draw();
+          const vf=new VideoFrame(canvas,{timestamp:ts,duration:frameDurUs});
+          videoEnc.encode(vf,{keyFrame:frames%kfEvery===0});
+          vf.close(); frames++;
           lastTick=Date.now();
           if(isFinite(d)&&d>0){
             const p=Math.min(1,ts/1e6/d);
