@@ -2354,15 +2354,16 @@ async function pickAvcCodec(w,h){
   // Use max dimension so portrait (e.g. 1080x1920) gets the same level as landscape 1920x1080.
   // Old code checked w/h separately and gave portrait 1080p Level 5.1 (4K tier),
   // which Android hardware encoders reject -> "encoder error".
+  // Prefer Baseline (42) over High (64): universally supported, negligible quality diff for LUT work.
   const m=Math.max(w,h);
   const lvl=m<=1280?'1f':m<=1920?'28':m<=2560?'32':'33';
-  for(const c of ['avc1.6400'+lvl,'avc1.4200'+lvl]){
+  for(const c of ['avc1.4200'+lvl,'avc1.6400'+lvl]){
     try{
       const s=await VideoEncoder.isConfigSupported({codec:c,width:w,height:h,bitrate:2e6,framerate:30});
       if(s&&s.supported)return c;
     }catch(e){}
   }
-  return 'avc1.640028';
+  return 'avc1.420028'; // Baseline Level 4.0: safest universal fallback
 }
 function seekTo(t){
   return new Promise(res=>{
@@ -2694,9 +2695,25 @@ $('expBtn').onclick=async()=>{
         blob=await exportWebCodecs(resW,resH,fps,bps);
         lab='MP4';
       }catch(e){
-        msg('Precise encoder failed ('+e.message+') — trying fallback…');
-        const r=await exportLegacy();
-        blob=r.blob; ext=r.ext; lab=r.lab;
+        // Progressive fallback: try 1080p WebCodecs before legacy (handles 4K/2K encoder limits)
+        const m=Math.max(resW,resH);
+        if(m>1920){
+          try{
+            msg('High-res encoder failed — retrying at 1080p…');
+            const s=1920/m;
+            const w2=Math.round(resW*s)&~1, h2=Math.round(resH*s)&~1;
+            blob=await exportWebCodecs(w2,h2,fps,Math.min(bps,15e6));
+            lab='MP4';
+          }catch(e2){
+            msg('Precise encoder failed — trying fallback…');
+            const r=await exportLegacy();
+            blob=r.blob; ext=r.ext; lab=r.lab;
+          }
+        }else{
+          msg('Precise encoder failed ('+e.message+') — trying fallback…');
+          const r=await exportLegacy();
+          blob=r.blob; ext=r.ext; lab=r.lab;
+        }
       }
     }else{
       const r=await exportLegacy();
@@ -2710,7 +2727,12 @@ $('expBtn').onclick=async()=>{
     a.textContent='⬇ Download '+lab+' '+resW+'×'+resH+' ('+mb+' MB)';
     $('dlZone').appendChild(a); a.click();
     msg('Done — '+lab+' '+resW+'×'+resH+' saved ✓ ('+mb+' MB)','ok');
-  }catch(e){msg('Export failed: '+e.message,'err');}
+  }catch(e){
+    const em=e.message||String(e);
+    let hint='';
+    if(/encoder|encode|codec|mime/i.test(em)) hint=' — try Size: 1080p or Format: HEVC';
+    msg('Export failed: '+em+hint,'err');
+  }
   exporting=false; $('expBtn').disabled=false; videoEl.onended=null;
   $('renderOverlay').hidden=true;
 };
