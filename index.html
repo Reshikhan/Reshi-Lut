@@ -146,7 +146,7 @@
     <div id="dlZone"></div>
     <p id="msg"></p>
   </div>
-<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.1</p>
+<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.0</p>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -2661,7 +2661,7 @@ async function exportLegacy(){
 $('expBtn').onclick=async()=>{
   if(exporting||!videoEl.videoWidth)return;
   exporting=true; $('expBtn').disabled=true; $('dlZone').innerHTML='';
-  videoEl.muted=true; $('renderOverlay').hidden=false; setProg(0);
+  $('renderOverlay').hidden=false; setProg(0);
   try{
     const [resW,resH]=exportSize();
     const fmt=$('fmtSel').value;
@@ -2692,7 +2692,7 @@ $('expBtn').onclick=async()=>{
     msg('Done — '+lab+' '+resW+'×'+resH+' saved ✓ ('+mb+' MB)','ok');
   }catch(e){msg('Export failed: '+e.message,'err');}
   exporting=false; $('expBtn').disabled=false; videoEl.onended=null;
-  videoEl.muted=false; $('renderOverlay').hidden=true;
+  $('renderOverlay').hidden=true;
 };
 
 /* ---------- restore saved LUTs ---------- */
