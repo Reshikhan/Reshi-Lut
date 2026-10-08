@@ -2433,7 +2433,7 @@ async function exportWebCodecs(resW,resH,targetFps,videoBps){
       const mopts={target,
         video:{codec:'avc',width:resW,height:resH},
         fastStart:'in-memory',
-        firstTimestampBehavior:'cross-track-offset'};
+        firstTimestampBehavior:'offset'}; // 'offset' rebases EACH track to 0 (audio comes from capture clock, video from mediaTime — 'cross-track-offset' kept audio's late start, stretching duration)
       const wantAudio=hasAudioTrack&&aSampleRate>0;
       if(wantAudio){
         // AAC-in-MP4 is what plays on iPhone; if this browser can't encode AAC,
