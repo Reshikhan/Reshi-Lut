@@ -11,7 +11,7 @@
   body{margin:0; font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
     background:linear-gradient(180deg,#f8f9fe 0%,#eef0f8 100%); color:#232838; min-height:100vh; touch-action:manipulation}
   .wrap{max-width:640px; margin:0 auto; padding:0 16px 60px}
-  body{background:linear-gradient(135deg,#e0e7ff 0%,#f5f3ff 30%,#fce7f3 70%,#e0e7ff 100%);
+  body{background:linear-gradient(180deg,#ffffff 0%,#f8f9fc 50%,#f0f2f8 100%);
     background-attachment:fixed; min-height:100vh}
   header{padding:22px 0 6px; text-align:center; position:relative}
   .homebtn{position:absolute; top:22px; left:0; padding:10px 18px; font-size:.85rem; font-weight:700;
@@ -43,8 +43,9 @@
   .ghostbtn:active{transform:scale(.97)}
   .hint{color:#8a90ad; font-size:.78rem; text-align:center; margin:10px 0 0}
   h2{font-size:1rem; margin:18px 0 10px; color:#3a4160}
-  #pvWrap{position:relative; border-radius:12px; overflow:hidden; background:#000}
-  canvas#gl{width:100%; height:auto; display:block}
+  #pvWrap{position:relative; border-radius:20px; overflow:hidden; background:#000;
+    display:flex; align-items:center; justify-content:center; min-height:200px; max-height:65vh}
+  canvas#gl{max-width:100%; max-height:65vh; width:auto; height:auto; display:block}
   #divider{position:absolute; top:0; bottom:0; width:0; z-index:3; cursor:ew-resize; touch-action:none}
   #divLine{position:absolute; top:0; bottom:0; left:-1px; width:2px; background:#fff; box-shadow:0 0 6px rgba(0,0,0,.8)}
   #divHandle{position:absolute; top:50%; left:0; transform:translate(-50%,-50%); width:34px; height:34px;
@@ -127,7 +128,10 @@
     </div>
     <button class="ghostbtn" id="splitBtn" style="margin-top:10px">⇄ Before / After: ON</button>
     <div class="trow">
-      <button id="playBtn" aria-label="Play or pause">▶</button>
+      <button id="playBtn" aria-label="Play or pause">
+        <svg id="icoPlay" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        <svg id="icoPause" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+      </button>
       <input type="range" id="seek" min="0" max="1000" value="0" aria-label="Seek">
     </div>
 
@@ -181,7 +185,7 @@
     <div id="dlZone"></div>
     <p id="msg"></p>
   </div>
-<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.2</p>
+<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.3</p>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -2336,8 +2340,8 @@ function loadVideo(f){
   videoEl.onerror=()=>msg('Could not play this video on your device','err');
 }
 $('playBtn').onclick=()=>{videoEl.paused?videoEl.play():videoEl.pause();};
-videoEl.onplay=()=>$('playBtn').textContent='⏸';
-videoEl.onpause=()=>$('playBtn').textContent='▶';
+videoEl.onplay=()=>{ $('icoPlay').style.display='none'; $('icoPause').style.display='block'; };
+videoEl.onpause=()=>{ $('icoPlay').style.display='block'; $('icoPause').style.display='none'; };
 videoEl.ontimeupdate=()=>{
   if(videoEl.duration)$('seek').value=Math.round(videoEl.currentTime/videoEl.duration*1000);
 };
@@ -2858,6 +2862,15 @@ $('expBtn').onclick=async()=>{
     a.className='dl';
     a.textContent='⬇ Download '+lab+' '+resW+'×'+resH+' ('+mb+' MB)';
     $('dlZone').appendChild(a); a.click();
+    // Post-export options: render again or start new video
+    const opts=document.createElement('div');
+    opts.style.cssText='display:flex;gap:10px;margin-top:12px';
+    opts.innerHTML=
+      '<button class="ghostbtn" id="reRenderBtn" style="margin-top:0;flex:1">🔄 Render again</button>'+
+      '<button class="ghostbtn" id="newVidBtn" style="margin-top:0;flex:1">📤 New video</button>';
+    $('dlZone').appendChild(opts);
+    $('reRenderBtn').onclick=()=>{ $('dlZone').innerHTML=''; $('expBtn').click(); };
+    $('newVidBtn').onclick=()=>{ $('dlZone').innerHTML=''; $('uploadCard').hidden=false; $('studio').hidden=true; if(videoEl.src)URL.revokeObjectURL(videoEl.src); videoEl.removeAttribute('src'); videoEl.load(); };
     msg('Done — '+lab+' '+resW+'×'+resH+' saved ✓ ('+mb+' MB)','ok');
   }catch(e){
     const em=e.message||String(e);
