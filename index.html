@@ -2499,12 +2499,24 @@ async function exportOffline(resW,resH,targetFps,videoBps){
     videoEl.pause();
     const kfEvery=Math.max(1,Math.round(fps));
     let frames=0;
+    // Wait for a freshly presented frame after seek (guarantees correct image)
+    const waitFrame=()=>new Promise(res=>{
+      const to=setTimeout(res,800);
+      try{
+        videoEl.requestVideoFrameCallback(()=>{clearTimeout(to);res();});
+      }catch(e){ clearTimeout(to); setTimeout(res,120); }
+    });
+    const seekExact=t=>new Promise(res=>{
+      const to=setTimeout(()=>{res();},2500);
+      videoEl.onseeked=()=>{clearTimeout(to);res();};
+      try{ videoEl.currentTime=t; }catch(e){ clearTimeout(to); res(); }
+    });
     for(let i=0;i<totalFrames;i++){
       if(done)break;
       const t=i/fps;
       if(t>=duration)break;
-      await seekTo(t);
-      await new Promise(r=>requestAnimationFrame(r));
+      await seekExact(t);
+      await waitFrame(); // ensure the sought frame is actually displayed
       draw();
       const ts=Math.round(t*1e6);
       const vf=new VideoFrame(canvas,{timestamp:ts,duration:frameDurUs});
