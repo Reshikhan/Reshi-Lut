@@ -8,57 +8,65 @@
 <style>
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
   body{margin:0; font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
-    background:#0b1226; color:#eef2ff; min-height:100vh; touch-action:manipulation}
+    background:linear-gradient(180deg,#f8f9fe 0%,#eef0f8 100%); color:#232838; min-height:100vh; touch-action:manipulation}
   .wrap{max-width:640px; margin:0 auto; padding:0 16px 60px}
   header{padding:22px 0 6px; text-align:center}
-  header h1{margin:0; font-size:1.5rem}
+  header h1{margin:0; font-size:1.5rem; color:#1a1f33}
   header h1 .g{background:linear-gradient(90deg,#8b5cf6,#ec4899); -webkit-background-clip:text; background-clip:text; color:transparent}
-  header p{margin:6px 0 0; color:#9aa6c4; font-size:.85rem}
-  .card{background:rgba(20,28,52,.8); border:1px solid rgba(255,255,255,.08); border-radius:16px;
-    padding:18px; margin-top:16px}
+  header p{margin:6px 0 0; color:#6b7290; font-size:.85rem}
+  .card{background:#ffffff; border:1px solid #e9ecf6; border-radius:20px;
+    padding:18px; margin-top:16px; box-shadow:0 10px 30px rgba(99,102,180,.08)}
   .bigbtn{display:block; width:100%; padding:18px; font-size:1.1rem; font-weight:800; color:#fff; border:0;
-    border-radius:14px; cursor:pointer; background:linear-gradient(90deg,#8b5cf6,#ec4899)}
+    border-radius:14px; cursor:pointer; background:linear-gradient(90deg,#8b5cf6,#ec4899);
+    box-shadow:0 8px 20px rgba(139,92,246,.35)}
   .bigbtn:active{transform:scale(.98)}
   .bigbtn:disabled{opacity:.5}
-  .ghostbtn{display:block; width:100%; padding:14px; font-size:1rem; font-weight:700; color:#eef2ff; cursor:pointer;
-    border-radius:14px; border:1px dashed #3b4770; background:transparent; margin-top:10px}
-  .hint{color:#9aa6c4; font-size:.78rem; text-align:center; margin:10px 0 0}
-  h2{font-size:1rem; margin:18px 0 10px; color:#cdd6f4}
+  .ghostbtn{display:block; width:100%; padding:14px; font-size:1rem; font-weight:700; color:#3a4160; cursor:pointer;
+    border-radius:14px; border:1px dashed #c6cdea; background:#f8f9fe; margin-top:10px}
+  .hint{color:#8a90ad; font-size:.78rem; text-align:center; margin:10px 0 0}
+  h2{font-size:1rem; margin:18px 0 10px; color:#3a4160}
   #pvWrap{position:relative; border-radius:12px; overflow:hidden; background:#000}
   canvas#gl{width:100%; height:auto; display:block}
   #divider{position:absolute; top:0; bottom:0; width:0; z-index:3; cursor:ew-resize; touch-action:none}
   #divLine{position:absolute; top:0; bottom:0; left:-1px; width:2px; background:#fff; box-shadow:0 0 6px rgba(0,0,0,.8)}
   #divHandle{position:absolute; top:50%; left:0; transform:translate(-50%,-50%); width:34px; height:34px;
-    border-radius:50%; background:rgba(255,255,255,.92); color:#111; font-size:.8rem; font-weight:800;
-    display:flex; align-items:center; justify-content:center; box-shadow:0 2px 8px rgba(0,0,0,.5)}
+    border-radius:50%; background:rgba(255,255,255,.95); color:#111; font-size:.8rem; font-weight:800;
+    display:flex; align-items:center; justify-content:center; box-shadow:0 2px 8px rgba(0,0,0,.4)}
   .splab{position:absolute; top:8px; z-index:2; font-size:.65rem; font-weight:800; letter-spacing:.08em;
-    background:rgba(0,0,0,.55); padding:3px 8px; border-radius:99px; pointer-events:none}
+    background:rgba(0,0,0,.55); color:#fff; padding:3px 8px; border-radius:99px; pointer-events:none}
   #labB{left:8px} #labA{right:8px}
+  #renderOverlay{position:absolute; inset:0; z-index:5; display:flex; align-items:center; justify-content:center;
+    background:rgba(255,255,255,.85); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px)}
+  #renderOverlay[hidden]{display:none}
+  .roBox{text-align:center; padding:20px}
+  .roPct{font-size:2.4rem; font-weight:800; background:linear-gradient(90deg,#8b5cf6,#ec4899);
+    -webkit-background-clip:text; background-clip:text; color:transparent}
+  .roTxt{color:#6b7290; font-size:.85rem; margin-top:8px}
   .trow{display:flex; align-items:center; gap:10px; margin-top:10px}
-  .trow button{flex:0 0 auto; width:52px; height:44px; font-size:1.2rem; border-radius:12px; border:1px solid #3b4770;
-    background:#141c38; color:#fff; cursor:pointer}
+  .trow button{flex:0 0 auto; width:52px; height:44px; font-size:1.2rem; border-radius:12px;
+    border:1px solid #dfe3f5; background:#eef0f9; color:#232838; cursor:pointer}
   input[type=range]{flex:1; accent-color:#8b5cf6; height:32px}
-  select{flex:1; padding:10px 12px; border-radius:10px; border:1px solid #3b4770; background:#141c38; color:#eef2ff; font-size:.9rem}
+  select{flex:1; padding:10px 12px; border-radius:10px; border:1px solid #dfe3f5; background:#eef0f9; color:#232838; font-size:.9rem}
   #lutGrid{display:grid; grid-template-columns:repeat(3,1fr); gap:8px}
   .luti{position:relative; border-radius:10px; overflow:hidden; cursor:pointer; padding:0;
-    border:2px solid #3b4770; background:#141c38; color:#eef2ff}
+    border:2px solid #e3e7f5; background:#fff; color:#232838}
   .luti.active{border-color:#8b5cf6; box-shadow:0 0 0 1px #8b5cf6}
   .luti canvas{width:100%; height:auto; display:block; aspect-ratio:16/9; object-fit:cover; background:#000}
   .luti .nm{display:block; font-size:.68rem; font-weight:700; padding:5px 4px; white-space:nowrap;
-    overflow:hidden; text-overflow:ellipsis; text-align:center}
+    overflow:hidden; text-overflow:ellipsis; text-align:center; color:#4a5170}
   .luti .x{position:absolute; top:2px; right:2px; width:22px; height:22px; border-radius:50%;
     background:rgba(0,0,0,.65); color:#fff; font-size:.85rem; line-height:22px; text-align:center}
   .luti.add{display:flex; align-items:center; justify-content:center; min-height:86px; border-style:dashed;
-    font-size:1.6rem; color:#9aa6c4}
+    font-size:1.6rem; color:#9aa3c7; background:#f8f9fe}
   .srow{display:flex; align-items:center; gap:10px; margin-top:14px}
-  .srow label{flex:0 0 64px; font-size:.85rem; color:#9aa6c4}
-  #sumLine{text-align:center; font-size:.8rem; color:#9aa6c4; margin:12px 0 0}
-  #prog{height:10px; background:#141c38; border-radius:99px; margin-top:12px; overflow:hidden}
+  .srow label{flex:0 0 64px; font-size:.85rem; color:#6b7290}
+  #sumLine{text-align:center; font-size:.8rem; color:#8a90ad; margin:12px 0 0}
+  #prog{height:10px; background:#e8ebf6; border-radius:99px; margin-top:12px; overflow:hidden}
   #bar{height:100%; width:0%; background:linear-gradient(90deg,#8b5cf6,#ec4899); border-radius:99px}
-  #msg{font-size:.85rem; min-height:1.2em; margin:10px 0 0; color:#9aa6c4}
-  #msg.ok{color:#4ade80} #msg.err{color:#f87171}
+  #msg{font-size:.85rem; min-height:1.2em; margin:10px 0 0; color:#8a90ad}
+  #msg.ok{color:#16a34a} #msg.err{color:#dc2626}
   .dl{display:inline-block; margin-top:10px; padding:14px 20px; border-radius:12px; font-weight:800; color:#fff;
-    text-decoration:none; background:linear-gradient(90deg,#22c55e,#16a34a)}
+    text-decoration:none; background:linear-gradient(90deg,#22c55e,#16a34a); box-shadow:0 8px 20px rgba(34,197,94,.3)}
   [hidden]{display:none !important}
 </style>
 </head>
@@ -80,6 +88,7 @@
       <span class="splab" id="labB">BEFORE</span>
       <span class="splab" id="labA">AFTER</span>
       <div id="divider"><div id="divLine"></div><div id="divHandle">◀▶</div></div>
+      <div id="renderOverlay" hidden><div class="roBox"><div class="roPct" id="roPct">0%</div><div class="roTxt">Rendering your video…<br>keep this tab open</div></div></div>
     </div>
     <button class="ghostbtn" id="splitBtn" style="margin-top:10px">⇄ Before / After: ON</button>
     <div class="trow">
@@ -137,7 +146,7 @@
     <div id="dlZone"></div>
     <p id="msg"></p>
   </div>
-<p style="text-align:center;color:#5b6579;font-size:.7rem;margin-top:24px">v2.0</p>
+<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.1</p>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -2026,6 +2035,7 @@ window.Mp4Muxer={ArrayBufferTarget:ArrayBufferTarget,FileSystemWritableFileStrea
 const $=id=>document.getElementById(id);
 const videoEl=$('v'), canvas=$('gl');
 const msg=(t,cls)=>{ const m=$('msg'); m.textContent=t||''; m.className=cls||''; };
+const setProg=p=>{p=Math.max(0,Math.min(100,p));$('bar').style.width=p+'%';const r=$('roPct');if(r)r.textContent=Math.round(p)+'%';};
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 /* ---------- saved LUTs (stay on the device) ---------- */
@@ -2290,7 +2300,9 @@ videoEl.ontimeupdate=()=>{
   if(videoEl.duration)$('seek').value=Math.round(videoEl.currentTime/videoEl.duration*1000);
 };
 let thumbT=null;
-videoEl.onseeked=()=>{ clearTimeout(thumbT); thumbT=setTimeout(repaintThumbs,150); };
+const queueThumbs=()=>{ clearTimeout(thumbT); thumbT=setTimeout(()=>{ if(!exporting)repaintThumbs(); },300); };
+videoEl.onseeked=queueThumbs;
+videoEl.addEventListener('playing',queueThumbs);
 $('seek').oninput=e=>{if(videoEl.duration)videoEl.currentTime=e.target.value/1000*videoEl.duration;};
 $('int').oninput=e=>{intensity=e.target.value/100;$('intVal').textContent=e.target.value+'%';};
 
@@ -2386,7 +2398,7 @@ async function exportWebCodecs(resW,resH,targetFps,videoBps){
     try{
       holdWake();
       document.addEventListener('visibilitychange',onHide);
-      $('prog').hidden=false; $('bar').style.width='0%';
+      $('prog').hidden=false; setProg(0);
       msg('📌 Keep this tab open until done… 0%');
 
       /* --- audio probe: play briefly, read one AudioData for its format --- */
@@ -2490,7 +2502,7 @@ async function exportWebCodecs(resW,resH,targetFps,videoBps){
           lastTick=Date.now();
           if(isFinite(d)&&d>0){
             const p=Math.min(1,ts/1e6/d);
-            $('bar').style.width=(p*100)+'%';
+            setProg(p*100);
             msg('Rendering H.264 '+(videoBps/1e6).toFixed(1)+' Mbps… '+Math.round(p*100)+'%');
           }
         }catch(e){fail(e);return;}
@@ -2584,7 +2596,7 @@ function renderPass(stream,mime,bps,resW,resH,saneDur){
       const t=videoEl.currentTime;
       if(t>lastT+0.002){lastT=t;lastMove=Date.now();}
       msg('Rendering… '+Math.round(Math.min(t,saneDur)/saneDur*100)+'%');
-      $('bar').style.width=(Math.min(t,saneDur)/saneDur*100)+'%';
+      setProg(Math.min(t,saneDur)/saneDur*100);
       if(Date.now()-t0-pausedMs>capMs)finish();
       else if(isFinite(videoEl.duration)&&videoEl.duration>0&&t>=videoEl.duration-0.05)finish();
       else if(t>0.5&&Date.now()-lastMove>3000)finish();
@@ -2599,7 +2611,7 @@ function renderPass(stream,mime,bps,resW,resH,saneDur){
     videoEl.onended=finish;
     holdWake();
     msg('📌 Keep this tab open until done… 0%');
-    $('prog').hidden=false; $('bar').style.width='0%';
+    $('prog').hidden=false; setProg(0);
     canvas.width=resW; canvas.height=resH;
     capTimer=setTimeout(()=>finish(),capMs);
     try{ rec.start(250); }catch(e){ fail(e); return; }
@@ -2649,6 +2661,7 @@ async function exportLegacy(){
 $('expBtn').onclick=async()=>{
   if(exporting||!videoEl.videoWidth)return;
   exporting=true; $('expBtn').disabled=true; $('dlZone').innerHTML='';
+  videoEl.muted=true; $('renderOverlay').hidden=false; setProg(0);
   try{
     const [resW,resH]=exportSize();
     const fmt=$('fmtSel').value;
@@ -2679,6 +2692,7 @@ $('expBtn').onclick=async()=>{
     msg('Done — '+lab+' '+resW+'×'+resH+' saved ✓ ('+mb+' MB)','ok');
   }catch(e){msg('Export failed: '+e.message,'err');}
   exporting=false; $('expBtn').disabled=false; videoEl.onended=null;
+  videoEl.muted=false; $('renderOverlay').hidden=true;
 };
 
 /* ---------- restore saved LUTs ---------- */
