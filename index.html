@@ -2662,23 +2662,28 @@ async function exportWebCodecs(resW,resH,targetFps,videoBps){
       let outFps=targetFps||30;
       const frameDurUs=Math.round(1e6/outFps);
       const kfEvery=Math.max(1,Math.round(outFps));
-      let frames=0,lastTick=Date.now();
+      let frames=0,lastTick=Date.now(),warmup=0;
       const useRVFC=typeof videoEl.requestVideoFrameCallback==='function';
+      // Clear to black so no garbage memory ever gets encoded
+      gl.clearColor(0,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT);
 
       const onFrame=(now,meta)=>{
         if(done)return;
         if(document.hidden){fail(new Error('Tab was hidden — export stopped. Keep this tab open and try again.'));return;}
         try{
+          // Warmup: draw 3 frames without encoding to let decoder stabilize.
+          // This prevents corrupted garbage frames at the start of output.
+          if(warmup<3){
+            warmup++;
+            draw();
+            if(useRVFC)videoEl.requestVideoFrameCallback(onFrame);
+            return;
+          }
           const mediaUs=Math.round(meta.mediaTime*1e6);
           // Fixed timestep: only encode when source has advanced past next output timestamp.
           // Output timestamps are perfectly regular (i/fps), immune to source stutter.
           const targetTs=frames*frameDurUs;
           if(mediaUs<targetTs){
-            if(useRVFC)videoEl.requestVideoFrameCallback(onFrame);
-            return;
-          }
-          // Skip first 100ms to let decoder stabilize (avoids corrupted first frame)
-          if(frames==0 && mediaUs<100000){
             if(useRVFC)videoEl.requestVideoFrameCallback(onFrame);
             return;
           }
