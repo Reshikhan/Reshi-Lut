@@ -2671,10 +2671,21 @@ async function exportWebCodecs(resW,resH,targetFps,videoBps){
           if(firstMediaTs===null)firstMediaTs=mediaUs;
           const ts=mediaUs-firstMediaTs;
           if(ts>lastTs&&(interval===0||ts>=nextTs)){
-            // Backpressure: if encoder is >30 frames behind, skip this frame
-            // (keeps memory bounded; player holds last frame, A/V stays in sync)
-            if(videoEnc.encodeQueueSize>30){
-              if(useRVFC)videoEl.requestVideoFrameCallback(onFrame);
+            // Backpressure: if encoder is behind, PAUSE video until it catches up
+            // (no frames dropped, no gaps — just takes longer; A/V stays in sync)
+            if(videoEnc.encodeQueueSize>15){
+              videoEl.pause();
+              msg('⏳ Encoder catching up… '+Math.round(ts/1e6/d*100)+'%');
+              const drain=async()=>{
+                while(videoEnc.encodeQueueSize>5&&!done){
+                  await new Promise(r=>setTimeout(r,120));
+                }
+                if(!done){
+                  try{ await videoEl.play(); }catch(e){}
+                  if(useRVFC)videoEl.requestVideoFrameCallback(onFrame);
+                }
+              };
+              drain();
               return;
             }
             lastTs=ts;
@@ -2855,13 +2866,18 @@ $('expBtn').onclick=async()=>{
     let blob=null, ext='mp4', lab='MP4';
     if(fmt==='mp4'&&canUseWebCodecs()){
       try{
-        msg('🔄 Offline rendering…');
-        blob=await exportOffline(resW,resH,fps,bps);
+        msg('⚡ Rendering (auto-pauses if encoder lags)…');
+        blob=await exportWebCodecs(resW,resH,fps,bps);
         lab='MP4';
       }catch(e){
-        msg('Offline render failed ('+e.message+') — trying fallback…');
-        const r=await exportLegacy();
-        blob=r.blob; ext=r.ext; lab=r.lab;
+        msg('Fast render failed ('+e.message+') — trying offline…');
+        try{
+          blob=await exportOffline(resW,resH,fps,bps);
+          lab='MP4';
+        }catch(e2){
+          const r=await exportLegacy();
+          blob=r.blob; ext=r.ext; lab=r.lab;
+        }
       }
     }else{
       const r=await exportLegacy();
