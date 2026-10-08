@@ -2081,7 +2081,7 @@ function parseCube(txt){
 
 /* ---------- WebGL preview (with before/after split) ---------- */
 let gl, texV, texL, U={}, glReady=false, hasLUT=false;
-let intensity=1, active='__orig', origBps=0, origSize=0;
+let intensity=1, active='__orig', origBps=0, origSize=0, videoFile=null;
 let splitPos=0.5, splitOn=true, exporting=false, wcActive=false;
 const luts=[]; // {name, lut}
 
@@ -2284,6 +2284,7 @@ function updateSummary(){
 
 function loadVideo(f){
   msg('');
+  videoFile=f; // stored for offline export audio decode
   try{ if(!glReady)initGL(); }
   catch(e){ msg(e.message,'err'); return; }
   if(videoEl.src)URL.revokeObjectURL(videoEl.src);
@@ -2372,6 +2373,122 @@ function seekTo(t){
     videoEl.addEventListener('seeked',()=>{clearTimeout(to);res();},{once:true});
     try{videoEl.currentTime=t;}catch(e){clearTimeout(to);res();}
   });
+}
+/* ============================================================
+   OFFLINE EXPORT — frame-by-frame, not real-time.
+   Seeks through the video and encodes each frame with exact timestamps.
+   Slower than real-time but bulletproof: output is smooth on any device,
+   regardless of encoder speed. Audio decoded directly from the file.
+   ============================================================ */
+async function exportOffline(resW,resH,targetFps,videoBps){
+  let muxer=null,target=null,videoEnc=null,audioEnc=null;
+  let done=false,finalized=false;
+  const fail=e=>{ if(done)return; done=true; cleanup(); throw(e instanceof Error?e:new Error(String(e))); };
+  const cleanup=()=>{ try{videoEl.pause();}catch(e){} };
+
+  // Detect FPS if "Original" — default 30
+  let fps=targetFps||30;
+  const frameDurUs=Math.round(1e6/fps);
+  const duration=videoEl.duration;
+  const totalFrames=Math.ceil(duration*fps);
+
+  holdWake();
+  $('prog').hidden=false; setProg(0);
+  msg('🔄 Offline rendering (frame-by-frame)… 0%');
+
+  try{
+    // --- decode audio from file ---
+    let audioBuf=null;
+    if(videoFile){
+      try{
+        const ab=await videoFile.arrayBuffer();
+        const AC=window.AudioContext||window.webkitAudioContext;
+        const actx=new AC();
+        audioBuf=await actx.decodeAudioData(ab);
+        actx.close();
+      }catch(e){ audioBuf=null; }
+    }
+
+    // --- muxer ---
+    target=new window.Mp4Muxer.ArrayBufferTarget();
+    const mopts={target,
+      video:{codec:'avc',width:resW,height:resH},
+      fastStart:'in-memory',
+      firstTimestampBehavior:'offset'};
+    let wantAudio=false, aSampleRate=0, aChannels=0;
+    if(audioBuf){
+      aSampleRate=audioBuf.sampleRate; aChannels=audioBuf.numberOfChannels;
+      try{
+        const s=await AudioEncoder.isConfigSupported({codec:'mp4a.40.2',sampleRate:aSampleRate,numberOfChannels:aChannels,bitrate:128000});
+        if(s&&s.supported){ mopts.audio={codec:'aac',sampleRate:aSampleRate,numberOfChannels:aChannels}; wantAudio=true; }
+      }catch(e){}
+    }
+    muxer=new window.Mp4Muxer.Muxer(mopts);
+
+    // --- video encoder ---
+    const codec=await pickAvcCodec(resW,resH);
+    videoEnc=new VideoEncoder({
+      output:(ch,meta)=>{ if(!finalized){try{muxer.addVideoChunk(ch,meta);}catch(e){fail(e);}} },
+      error:fail
+    });
+    videoEnc.configure({codec,width:resW,height:resH,
+      bitrate:Math.max(800000,Math.round(videoBps)),bitrateMode:'constant',
+      framerate:fps, latencyMode:'quality'});
+
+    // --- audio encoder: feed PCM chunks ---
+    if(wantAudio){
+      audioEnc=new AudioEncoder({
+        output:(ch,meta)=>{ if(!finalized){try{muxer.addAudioChunk(ch,meta);}catch(e){}} },
+        error:()=>{}
+      });
+      audioEnc.configure({codec:'mp4a.40.2',sampleRate:aSampleRate,numberOfChannels:aChannels,bitrate:128000});
+      const nCh=aChannels, sr=aSampleRate, len=audioBuf.length;
+      const perChunk=1024;
+      const chData=[];
+      for(let c=0;c<nCh;c++) chData.push(audioBuf.getChannelData(c));
+      for(let off=0; off<len; off+=perChunk){
+        if(done)break;
+        const n=Math.min(perChunk, len-off);
+        const inter=new Float32Array(n*nCh);
+        for(let c=0;c<nCh;c++){ const src=chData[c]; for(let i=0;i<n;i++) inter[i*nCh+c]=src[off+i]; }
+        const ad=new AudioData({format:'f32',sampleRate:sr,numberOfFrames:n,numberOfChannels:nCh,
+          timestamp:Math.round(off/sr*1e6), data:inter});
+        audioEnc.encode(ad); ad.close();
+      }
+      await audioEnc.flush();
+    }
+
+    // --- video: seek frame by frame ---
+    canvas.width=resW; canvas.height=resH;
+    wcActive=true;
+    videoEl.pause();
+    const kfEvery=Math.max(1,Math.round(fps));
+    let frames=0;
+    for(let i=0;i<totalFrames;i++){
+      if(done)break;
+      const t=i/fps;
+      if(t>=duration)break;
+      await seekTo(t);
+      await new Promise(r=>requestAnimationFrame(r));
+      draw();
+      const ts=Math.round(t*1e6);
+      const vf=new VideoFrame(canvas,{timestamp:ts,duration:frameDurUs});
+      videoEnc.encode(vf,{keyFrame:frames%kfEvery===0});
+      vf.close(); frames++;
+      const p=Math.min(1,(i+1)/totalFrames);
+      setProg(p*100);
+      msg('🔄 Offline rendering '+Math.round(p*100)+'% (frame '+(i+1)+'/'+totalFrames+')');
+      if(i%10===0) await new Promise(r=>setTimeout(r,0));
+    }
+    await videoEnc.flush();
+
+    let blob=null;
+    finalized=true; muxer.finalize();
+    blob=new Blob([target.buffer],{type:'video/mp4'});
+    cleanup();
+    if(!blob||!blob.size) throw new Error('encoder produced no data');
+    return blob;
+  }catch(e){ cleanup(); throw e; }
 }
 async function exportWebCodecs(resW,resH,targetFps,videoBps){
   let muxer=null,target=null,videoEnc=null,audioEnc=null,audioReader=null,probeTracks=[];
@@ -2691,29 +2808,13 @@ $('expBtn').onclick=async()=>{
     let blob=null, ext='mp4', lab='MP4';
     if(fmt==='mp4'&&canUseWebCodecs()){
       try{
-        msg('⚡ Rendering with precise encoder…');
-        blob=await exportWebCodecs(resW,resH,fps,bps);
+        msg('🔄 Offline rendering…');
+        blob=await exportOffline(resW,resH,fps,bps);
         lab='MP4';
       }catch(e){
-        // Progressive fallback: try 1080p WebCodecs before legacy (handles 4K/2K encoder limits)
-        const m=Math.max(resW,resH);
-        if(m>1920){
-          try{
-            msg('High-res encoder failed — retrying at 1080p…');
-            const s=1920/m;
-            const w2=Math.round(resW*s)&~1, h2=Math.round(resH*s)&~1;
-            blob=await exportWebCodecs(w2,h2,fps,Math.min(bps,15e6));
-            lab='MP4';
-          }catch(e2){
-            msg('Precise encoder failed — trying fallback…');
-            const r=await exportLegacy();
-            blob=r.blob; ext=r.ext; lab=r.lab;
-          }
-        }else{
-          msg('Precise encoder failed ('+e.message+') — trying fallback…');
-          const r=await exportLegacy();
-          blob=r.blob; ext=r.ext; lab=r.lab;
-        }
+        msg('Offline render failed ('+e.message+') — trying fallback…');
+        const r=await exportLegacy();
+        blob=r.blob; ext=r.ext; lab=r.lab;
       }
     }else{
       const r=await exportLegacy();
