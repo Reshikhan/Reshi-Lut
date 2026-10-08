@@ -2929,6 +2929,29 @@ $('expBtn').onclick=async()=>{
   $('renderOverlay').hidden=true;
 };
 
+
+
+/* Default LUTs: fetched from luts/ folder on first run */
+const DEFAULT_LUT_FILES=[
+  'Cine_wedding.cube','Cinematic_Lut_V2.cube','SONY_HL.cube',
+  'Sony-CL-AZ.cube','FGCineVibrant.cube',
+  'sony_lut_1.Animals_09___4K_res.cube','lut_1.rabbit-5639615.cube','Apple-Log_XZ1.cube'
+];
+async function loadDefaultLuts(){
+  for(const fname of DEFAULT_LUT_FILES){
+    try{
+      const name=fname.replace(/\.cube$/i,'');
+      if(luts.some(l=>l.name===name||l.name===fname)) continue;
+      const resp=await fetch('luts/'+fname);
+      if(!resp.ok) continue;
+      const text=await resp.text();
+      const lut=parseCube(text);
+      luts.push({name:fname,lut:lut});
+      try{ if(typeof DB!=='undefined'&&DB) DB.put({name:fname,text:text}); }catch(e){}
+    }catch(e){}
+  }
+  renderLuts();
+}
 /* ---------- restore saved LUTs ---------- */
 (async()=>{
   renderLuts();
@@ -2941,6 +2964,8 @@ $('expBtn').onclick=async()=>{
   }else{
     $('lutHint').textContent='LUTs work for this session on this device';
   }
+  // Load built-in default LUTs (first run)
+  loadDefaultLuts();
 })();
 </script>
 </body>
