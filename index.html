@@ -2258,7 +2258,12 @@ $('lutIn').onchange=e=>{if(e.target.files.length)addLUTFiles([...e.target.files]
 function qualityBps(){
   const mult={max:1,high:0.7,bal:0.45,small:0.25}[$('qSel').value]||0.7;
   const base=origBps>0?origBps:8000000;
-  return Math.max(800000,Math.round(base*mult-128000)); // leave room for audio
+  let bps=Math.max(800000,Math.round(base*mult-128000)); // leave room for audio
+  // Cap for smooth mobile playback: origBps from phones can be 50-80 Mbps,
+  // which stutters/freezes on Android decoders. These caps are visually transparent.
+  const h=exportSize()[1];
+  const cap=h>=2160?30e6:h>=1440?20e6:h>=1080?12e6:h>=720?8e6:5e6;
+  return Math.min(bps,cap);
 }
 function exportSize(){
   const vw=videoEl.videoWidth, vh=videoEl.videoHeight, t=$('resSel').value;
@@ -2496,6 +2501,12 @@ async function exportWebCodecs(resW,resH,targetFps,videoBps){
           if(firstMediaTs===null)firstMediaTs=mediaUs;
           const ts=mediaUs-firstMediaTs;
           if(ts>lastTs&&(interval===0||ts>=nextTs)){
+            // Backpressure: if encoder is >30 frames behind, skip this frame
+            // (keeps memory bounded; player holds last frame, A/V stays in sync)
+            if(videoEnc.encodeQueueSize>30){
+              if(useRVFC)videoEl.requestVideoFrameCallback(onFrame);
+              return;
+            }
             lastTs=ts;
             draw();
             const vf=new VideoFrame(canvas,{timestamp:ts,duration:Math.round(interval||33333)});
