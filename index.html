@@ -2121,7 +2121,7 @@ let splitPos=0.5, splitOn=true, exporting=false, wcActive=false;
 const luts=[]; // {name, lut}
 
 function initGL(){
-  gl=canvas.getContext('webgl',{antialias:false});
+  gl=canvas.getContext('webgl',{antialias:false,preserveDrawingBuffer:true});
   if(!gl) throw new Error('WebGL not available on this device');
   const vs='attribute vec2 p; varying vec2 uv; void main(){uv=p*0.5+0.5; gl_Position=vec4(p,0.,1.);}';
   const fs=['precision mediump float; varying vec2 uv;',
@@ -2187,6 +2187,7 @@ function draw(){
   gl.uniform1f(U.bypass,0);
   gl.uniform1f(U.splitX,(splitOn&&!exporting)?splitPos:-1);
   gl.drawArrays(gl.TRIANGLES,0,3);
+  gl.flush();
 }
 
 /* ---------- LUT thumbnails (tiny CPU preview per LUT) ---------- */
