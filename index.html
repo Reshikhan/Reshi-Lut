@@ -2468,7 +2468,7 @@ async function exportOffline(resW,resH,targetFps,videoBps){
     });
     videoEnc.configure({codec,width:resW,height:resH,
       bitrate:Math.max(800000,Math.round(videoBps)),bitrateMode:'constant',
-      framerate:fps, latencyMode:'quality'});
+      framerate:fps, latencyMode:'realtime'});
 
     // --- audio encoder: feed PCM chunks ---
     if(wantAudio){
@@ -2658,22 +2658,8 @@ async function exportWebCodecs(resW,resH,targetFps,videoBps){
       await seekTo(0);
       canvas.width=resW; canvas.height=resH;
       wcActive=true; // rAF loop stands down; onFrame drives draw() explicitly
-      // Detect source FPS if "Original" requested (1s pre-roll)
-      let outFps=targetFps;
-      if(!outFps){
-        try{
-          msg('Detecting frame rate…');
-          const detected=await new Promise(res=>{
-            let n=0; const t0=performance.now();
-            const cb=()=>{ n++; if(performance.now()-t0<1000) videoEl.requestVideoFrameCallback(cb); else res(n); };
-            videoEl.requestVideoFrameCallback(cb);
-          });
-          // Round to nearest standard FPS
-          outFps=[24,25,30,50,60].reduce((a,b)=>Math.abs(b-detected)<Math.abs(a-detected)?b:a);
-          if(outFps<20||outFps>65) outFps=30;
-        }catch(e){ outFps=30; }
-        await seekTo(0);
-      }
+      // Fast: use selected FPS or 30 default (no detection delay)
+      let outFps=targetFps||30;
       const frameDurUs=Math.round(1e6/outFps);
       const kfEvery=Math.max(1,Math.round(outFps));
       let frames=0,lastMediaUs=-1,lastTick=Date.now();
@@ -2695,11 +2681,11 @@ async function exportWebCodecs(resW,resH,targetFps,videoBps){
           const ts=frames*frameDurUs;
           // Backpressure: if encoder is behind, PAUSE video until it catches up
           // (no frames dropped, no gaps - just takes longer; A/V stays in sync)
-          if(videoEnc.encodeQueueSize>15){
+          if(videoEnc.encodeQueueSize>100){
             videoEl.pause();
             msg('Encoder catching up... '+Math.round(ts/1e6/d*100)+'%');
             const drain=async()=>{
-              while(videoEnc.encodeQueueSize>5&&!done){
+              while(videoEnc.encodeQueueSize>20&&!done){
                 await new Promise(r=>setTimeout(r,120));
               }
               if(!done){
