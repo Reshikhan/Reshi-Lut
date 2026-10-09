@@ -185,7 +185,7 @@
     <div id="dlZone"></div>
     <p id="msg"></p>
   </div>
-<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.6</p>
+<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.7</p>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -697,7 +697,7 @@ async function exportDecoder(resW,resH,videoBps,targetFps){
   const holdWake=()=>{ try{ navigator.wakeLock.request('screen').then(w=>{wl=w;}).catch(()=>{}); }catch(e){} };
   const cleanup=()=>{
     document.removeEventListener('visibilitychange',onHide);
-    exporting=false; wcActive=false;
+    wcActive=false;
     try{if(wl)wl.release();}catch(e){}
     try{ gl.uniform1f(U.uRot,0); }catch(e){}
     try{if(decoder&&decoder.state!=='closed')decoder.close();}catch(e){}
@@ -1393,6 +1393,7 @@ $('expBtn').onclick=async()=>{
       }catch(e){
         lastEngineInfo='classic (v3 failed: '+(e&&e.message||e)+')';
         msg('Fast render failed ('+e.message+') — trying offline…');
+        exporting=true; wcActive=false; // v3 cleanup cleared these; fallbacks need them
         try{
           blob=await exportOffline(resW,resH,fps,bps);
           lab='MP4';
