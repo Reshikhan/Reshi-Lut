@@ -185,7 +185,7 @@
     <div id="dlZone"></div>
     <p id="msg"></p>
   </div>
-<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.12</p>
+<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.13</p>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -648,7 +648,6 @@ function demuxMP4(buf){
       }catch(e){ done(()=>reject(e)); }
     };
     try{
-      box.start();
       const b=buf.slice(0); b.fileStart=0;
       box.appendBuffer(b);
       box.flush();
