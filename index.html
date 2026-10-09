@@ -185,7 +185,7 @@
     <div id="dlZone"></div>
     <p id="msg"></p>
   </div>
-<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.1</p>
+<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.2</p>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -527,6 +527,18 @@ function canUseDecoderEngine(){
       && canUseWebCodecs();
   }catch(e){return false;}
 }
+/* Diagnostic: why is the v3 engine unavailable? (shown after export) */
+function decoderEngineWhy(){
+  try{
+    if(isIOS())return 'iPhone keeps classic path';
+    if(typeof VideoDecoder==='undefined')return 'no VideoDecoder';
+    if(typeof EncodedVideoChunk==='undefined')return 'no EncodedVideoChunk';
+    if(typeof MP4Box==='undefined')return 'mp4box library failed to load (CDN blocked?)';
+    if(!canUseWebCodecs())return 'WebCodecs unavailable';
+    return 'ready';
+  }catch(e){return 'check failed';}
+}
+let lastEngineInfo='';
 /* Rebuild the avcC box payload (no 8-byte box header) from mp4box's
    parsed fields — this is the VideoDecoder `description`. */
 function buildAvcCDesc(avcC){
@@ -1288,13 +1300,16 @@ $('expBtn').onclick=async()=>{
       try{
         if(canUseDecoderEngine()){
           msg('⚡ Rendering with the new engine…');
+          lastEngineInfo='v3';
           blob=await exportDecoder(resW,resH,bps,fps);
         }else{
+          lastEngineInfo='classic (v3 unavailable: '+decoderEngineWhy()+')';
           msg('⚡ Rendering (auto-pauses if encoder lags)…');
           blob=await exportWebCodecs(resW,resH,fps,bps);
         }
         lab='MP4';
       }catch(e){
+        lastEngineInfo='classic (v3 failed: '+(e&&e.message||e)+')';
         msg('Fast render failed ('+e.message+') — trying offline…');
         try{
           blob=await exportOffline(resW,resH,fps,bps);
@@ -1309,6 +1324,7 @@ $('expBtn').onclick=async()=>{
       blob=r.blob; ext=r.ext; lab=r.lab;
     }
     const mb=(blob.size/1048576).toFixed(1);
+    if(lastEngineInfo){ const ei=document.createElement('div'); ei.style.cssText='font-size:11px;opacity:.55;margin-top:6px'; ei.textContent='Engine: '+lastEngineInfo; $('dlZone').appendChild(ei); }
     const a=document.createElement('a');
     a.href=URL.createObjectURL(blob);
     a.download='reshi-graded-'+resW+'x'+resH+'-'+Date.now()+'.'+ext;
