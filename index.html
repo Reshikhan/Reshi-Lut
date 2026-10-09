@@ -185,7 +185,7 @@
     <div id="dlZone"></div>
     <p id="msg"></p>
   </div>
-<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4</p>
+<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.1</p>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -601,7 +601,7 @@ function drawDecoderFrame(frame){
   gl.flush();
 }
 const sleepMs=ms=>new Promise(r=>setTimeout(r,ms));
-async function exportDecoder(resW,resH,videoBps){
+async function exportDecoder(resW,resH,videoBps,targetFps){
   let muxer=null,target=null,videoEnc=null,audioEnc=null,decoder=null;
   let done=false,finalized=false,wl=null;
   const holdWake=()=>{ try{ navigator.wakeLock.request('screen').then(w=>{wl=w;}).catch(()=>{}); }catch(e){} };
@@ -716,21 +716,44 @@ async function exportDecoder(resW,resH,videoBps){
   })().catch(e=>{ decErr=e; let w; while((w=waiters.shift()))w.rej(e); });
 
   let processed=0,lastPct=4;
+  const outFps=targetFps||0, outDur=outFps?Math.round(1e6/outFps):0;
+  let nextOutTs=0, outCount=0;
+  const kfEvery=Math.max(1,Math.round(outFps||30));
+  const encodeAt=(ts,isKey)=>{
+    const vf=new VideoFrame(canvas,{timestamp:ts,
+      duration:outDur||durMap.get(ts)||Math.round(1e6/30)});
+    try{ videoEnc.encode(vf,{keyFrame:isKey}); }
+    catch(e){ try{vf.close();}catch(_){} throw e; }
+    try{ vf.close(); }catch(_){}
+    outCount++;
+  };
   try{
     while(processed<total){
       const frame=await nextFrame();
       try{
         drawDecoderFrame(frame);
-        const vf=new VideoFrame(canvas,{timestamp:frame.timestamp,
-          duration:durMap.get(frame.timestamp)||Math.round(1e6/30)});
         while(videoEnc.encodeQueueSize>4) await sleepMs(8);
-        try{ videoEnc.encode(vf,{keyFrame:keyTs.has(frame.timestamp)}); }
-        catch(e){ try{vf.close();}catch(_){} throw e; }
-        try{ vf.close(); }catch(_){}
+        if(!outFps){
+          encodeAt(frame.timestamp, keyTs.has(frame.timestamp));
+        }else{
+          while(frame.timestamp>=nextOutTs){
+            encodeAt(nextOutTs, outCount%kfEvery===0);
+            nextOutTs+=outDur;
+          }
+        }
       }finally{ try{ frame.close(); }catch(_){} }
       processed++;
       const pct=4+Math.round(processed/total*90);
       if(pct!==lastPct){ lastPct=pct; setProg(pct); msg('⚡ New engine: rendering… '+pct+'%'); }
+    }
+    // tail: fill any remaining output ticks with the last drawn frame
+    if(outFps){
+      const lastS=samples[total-1], totalDur=lastS.tsUs+(lastS.durUs||outDur);
+      while(nextOutTs<=totalDur){
+        while(videoEnc.encodeQueueSize>4) await sleepMs(8);
+        encodeAt(nextOutTs, outCount%kfEvery===0);
+        nextOutTs+=outDur;
+      }
     }
   }catch(e){ fail(e); }
   await pump;
@@ -1263,9 +1286,9 @@ $('expBtn').onclick=async()=>{
     let blob=null, ext='mp4', lab='MP4';
     if(fmt==='mp4'&&canUseWebCodecs()){
       try{
-        if(fps===0&&canUseDecoderEngine()){
+        if(canUseDecoderEngine()){
           msg('⚡ Rendering with the new engine…');
-          blob=await exportDecoder(resW,resH,bps);
+          blob=await exportDecoder(resW,resH,bps,fps);
         }else{
           msg('⚡ Rendering (auto-pauses if encoder lags)…');
           blob=await exportWebCodecs(resW,resH,fps,bps);
