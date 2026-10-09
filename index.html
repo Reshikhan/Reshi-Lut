@@ -185,7 +185,7 @@
     <div id="dlZone"></div>
     <p id="msg"></p>
   </div>
-<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.2</p>
+<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.3</p>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -559,6 +559,39 @@ function buildAvcCDesc(avcC){
   pps.forEach(p=>{ dv.setUint16(o,p.length); o+=2; out.set(p,o); o+=p.length; });
   return out;
 }
+/* Rebuild the hvcC box payload (no 8-byte box header) from mp4box's
+   parsed fields — the VideoDecoder `description` for HEVC (H.265) inputs. */
+function buildHvcCDesc(hvcC){
+  const arrs=hvcC.nalu_arrays||[];
+  let len=23;
+  arrs.forEach(a=>{ len+=3; for(let i=0;i<a.length;i++){ const d=a[i]&&a[i].data; len+=2+((d&&d.length)||0); } });
+  const out=new Uint8Array(len), dv=new DataView(out.buffer);
+  let o=0;
+  out[o++]=hvcC.configurationVersion&255;
+  out[o++]=((hvcC.general_profile_space&3)<<6)|((hvcC.general_tier_flag&1)<<5)|(hvcC.general_profile_idc&31);
+  dv.setUint32(o,hvcC.general_profile_compatibility>>>0); o+=4;
+  const ci=hvcC.general_constraint_indicator||new Uint8Array(6);
+  for(let i=0;i<6;i++) out[o++]=ci[i]&255;
+  out[o++]=hvcC.general_level_idc&255;
+  const mssi=hvcC.min_spatial_segmentation_idc&4095;
+  out[o++]=0xF0|((mssi>>8)&15); out[o++]=mssi&255;
+  out[o++]=0xFC|(hvcC.parallelismType&3);
+  out[o++]=0xFC|(hvcC.chroma_format_idc&3);
+  out[o++]=0xF8|(hvcC.bit_depth_luma_minus8&7);
+  out[o++]=0xF8|(hvcC.bit_depth_chroma_minus8&7);
+  dv.setUint16(o,hvcC.avgFrameRate&65535); o+=2;
+  out[o++]=((hvcC.constantFrameRate&3)<<6)|((hvcC.numTemporalLayers&7)<<3)|((hvcC.temporalIdNested&1)<<2)|(hvcC.lengthSizeMinusOne&3);
+  out[o++]=arrs.length&255;
+  arrs.forEach(a=>{
+    out[o++]=((a.completeness&1)<<7)|(a.nalu_type&63);
+    dv.setUint16(o,a.length); o+=2;
+    for(let i=0;i<a.length;i++){
+      const d=(a[i]&&a[i].data)||new Uint8Array(0);
+      dv.setUint16(o,d.length); o+=2; out.set(d,o); o+=d.length;
+    }
+  });
+  return out;
+}
 /* Demux the MP4 with mp4box. Returns config + lightweight per-sample
    metadata (offset/size/timestamp into the file buffer — no big copies). */
 function demuxMP4(buf){
@@ -573,8 +606,8 @@ function demuxMP4(buf){
         if(!vt) throw new Error('no video track in file');
         const trak=(box.moov.traks||[]).find(t=>t.tkhd&&t.tkhd.track_id===vt.id);
         const entry=trak&&trak.mdia.minf.stbl.stsd.entries.find(e=>e.avcC||e.hvcC);
-        if(!entry||!entry.avcC) throw new Error('only H.264 (AVC) inputs are supported by the new engine ('+(vt.codec||'unknown')+')');
-        const desc=buildAvcCDesc(entry.avcC);
+        if(!entry||(!entry.avcC&&!entry.hvcC)) throw new Error('unsupported video codec ('+(vt.codec||'unknown')+') — the new engine handles H.264 and H.265');
+        const desc=entry.avcC?buildAvcCDesc(entry.avcC):buildHvcCDesc(entry.hvcC);
         const samples=box.getTrackSamplesInfo(vt.id)||[];
         if(!samples.length) throw new Error('no video samples found');
         const ts=vt.timescale||90000;
