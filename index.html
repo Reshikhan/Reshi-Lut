@@ -185,7 +185,7 @@
     <div id="dlZone"></div>
     <p id="msg"></p>
   </div>
-<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.7</p>
+<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.8</p>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -621,8 +621,10 @@ function demuxMP4(buf){
       try{
         const vt=(info.videoTracks||[])[0];
         if(!vt) throw new Error('no video track in file');
-        // Defer sample reading until after flush() below.
         box._deferredInfo=info;
+        // Also snapshot samples here (onReady timing); for some files this
+        // yields the fuller list than post-flush. We take the max below.
+        try{ box._earlySamples=box.getTrackSamplesInfo(vt.id)||[]; }catch(e){ box._earlySamples=[]; }
       }catch(e){ done(()=>reject(e)); }
     };
     try{
@@ -655,7 +657,10 @@ function demuxMP4(buf){
       const entry=trak&&trak.mdia.minf.stbl.stsd.entries.find(e=>e.avcC||e.hvcC);
       if(!entry||(!entry.avcC&&!entry.hvcC)) throw new Error('unsupported video codec ('+(vt.codec||'unknown')+') — the new engine handles H.264 and H.265');
       const desc=entry.avcC?buildAvcCDesc(entry.avcC):buildHvcCDesc(entry.hvcC);
-      const samples=box.getTrackSamplesInfo(vt.id)||[];
+      let samples=box.getTrackSamplesInfo(vt.id)||[];
+      // Take whichever read (onReady-time vs post-flush) found more samples.
+      const early=box._earlySamples||[];
+      if(early.length>samples.length) samples=early;
       if(!samples.length) throw new Error('no video samples found');
       const ts=vt.timescale||90000;
       const list=samples.map(s=>({
@@ -664,13 +669,15 @@ function demuxMP4(buf){
         key:!!s.is_sync,
         offset:s.offset, size:s.size
       }));
+      // NB: keep list in decode (file) order for the decoder pump; maxEnd below
+      // is order-independent.
       let durationUs=Math.round((info.duration||0)*1000);
-      const lastEnd=list[list.length-1].tsUs+list[list.length-1].durUs;
-      if(lastEnd>durationUs) durationUs=lastEnd;
+      const maxEnd=list.reduce((m,s)=>Math.max(m,s.tsUs+s.durUs),0);
+      if(maxEnd>durationUs) durationUs=maxEnd;
       // Sanity: video samples must cover most of the file duration, else
       // we'd silently produce a truncated video (e.g. fragmented MP4 misread).
-      if(durationUs>2000000 && lastEnd<durationUs*0.9)
-        throw new Error('could not read all video frames (got '+Math.round(lastEnd/1e6)+'s of '+Math.round(durationUs/1e6)+'s)');
+      if(durationUs>2000000 && maxEnd<durationUs*0.9)
+        throw new Error('could not read all video frames (got '+Math.round(maxEnd/1e6)+'s of '+Math.round(durationUs/1e6)+'s)');
         done(()=>resolve({ codec:vt.codec, desc, w:vt.video.width, h:vt.video.height, rot,
                   samples:list, durationUs,
                   hasAudio:((info.audioTracks||[]).length>0) }));
