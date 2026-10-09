@@ -185,7 +185,7 @@
     <div id="dlZone"></div>
     <p id="msg"></p>
   </div>
-<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.3</p>
+<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.4</p>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -719,7 +719,7 @@ async function exportDecoder(resW,resH,videoBps,targetFps){
       const n=Math.min(per,ch0.length-o);
       const pcm=new Float32Array(n*aChannels);
       for(let i=0;i<n;i++){ pcm[i*aChannels]=ch0[o+i]; if(chN)pcm[i*aChannels+1]=chN[o+i]; }
-      const ad=new AudioData({format:'f32-planar',sampleRate:aSampleRate,numberOfFrames:n,
+      const ad=new AudioData({format:'f32',sampleRate:aSampleRate,numberOfFrames:n,
         numberOfChannels:aChannels, timestamp:tUs, data:pcm.buffer});
       while(audioEnc.encodeQueueSize>32) await sleepMs(10);
       try{ audioEnc.encode(ad); }catch(e){}
