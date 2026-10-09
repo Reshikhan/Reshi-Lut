@@ -185,7 +185,7 @@
     <div id="dlZone"></div>
     <p id="msg"></p>
   </div>
-<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.9</p>
+<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.10</p>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -650,9 +650,8 @@ function demuxMP4(buf){
       box.appendBuffer(b);
       box.flush();
     }catch(e){ done(()=>reject(e)); return; }
-    // Entire file parsed now — safe to read the full sample list.
-    // (onReady usually fires synchronously inside appendBuffer; poll briefly
-    // in case it arrives async.)
+    // Use mp4box sample extraction (robust for fragmented/large files).
+    // getTrackSamplesInfo can return partial lists; onSamples gets everything.
     let tries=0;
     const finish=()=>{
       try{
@@ -675,25 +674,34 @@ function demuxMP4(buf){
       const entry=trak&&trak.mdia.minf.stbl.stsd.entries.find(e=>e.avcC||e.hvcC);
       if(!entry||(!entry.avcC&&!entry.hvcC)) throw new Error('unsupported video codec ('+(vt.codec||'unknown')+') — the new engine handles H.264 and H.265');
       const desc=entry.avcC?buildAvcCDesc(entry.avcC):buildHvcCDesc(entry.hvcC);
-      let samples=box.getTrackSamplesInfo(vt.id)||[];
-      // Take whichever read (onReady-time vs post-flush) found more samples.
+      // Extract samples via onSamples (handles fragmented + large files).
+      const extracted=[];
+      box.setExtractionOptions(vt.id, null, { nbSamples: Infinity });
+      box.onSamples=(id,user,smps)=>{
+        for(const s of smps) extracted.push(s);
+      };
+      box.start();
+      // onSamples fires synchronously during start() for buffered data.
+      // Also try getTrackSamplesInfo as fallback and take the fuller list.
+      let infoSamples=[];
+      try{ infoSamples=box.getTrackSamplesInfo(vt.id)||[]; }catch(e){}
       const early=box._earlySamples||[];
+      let samples=extracted;
+      if(infoSamples.length>samples.length) samples=infoSamples;
       if(early.length>samples.length) samples=early;
+      try{ box.stop(); }catch(_){}
       if(!samples.length) throw new Error('no video samples found');
       const ts=vt.timescale||90000;
       const list=samples.map(s=>({
-        tsUs:Math.max(0,Math.round(s.cts*1e6/ts)),
+        tsUs:Math.max(0,Math.round((s.cts!==undefined?s.cts:s.dts)*1e6/ts)),
         durUs:Math.max(1,Math.round(s.duration*1e6/ts)),
-        key:!!s.is_sync,
-        offset:s.offset, size:s.size
+        key:!!(s.is_sync||s.isSync),
+        offset:s.offset, size:s.size,
+        data:s.data // may be present from extraction
       }));
-      // NB: keep list in decode (file) order for the decoder pump; maxEnd below
-      // is order-independent.
       let durationUs=Math.round((info.duration||0)*1000);
       const maxEnd=list.reduce((m,s)=>Math.max(m,s.tsUs+s.durUs),0);
       if(maxEnd>durationUs) durationUs=maxEnd;
-      // Sanity: video samples must cover most of the file duration, else
-      // we'd silently produce a truncated video (e.g. fragmented MP4 misread).
       if(durationUs>2000000 && maxEnd<durationUs*0.9)
         throw new Error('could not read all video frames (got '+Math.round(maxEnd/1e6)+'s of '+Math.round(durationUs/1e6)+'s)');
         done(()=>resolve({ codec:vt.codec, desc, w:vt.video.width, h:vt.video.height, rot,
@@ -827,7 +835,7 @@ async function exportDecoder(resW,resH,videoBps,targetFps){
       const s=samples[i];
       while(decoder.decodeQueueSize>16) await sleepMs(10);
       decoder.decode(new EncodedVideoChunk({type:s.key?'key':'delta',
-        timestamp:s.tsUs, duration:s.durUs, data:fileU8.subarray(s.offset,s.offset+s.size)}));
+        timestamp:s.tsUs, duration:s.durUs, data:(s.data?s.data:fileU8.subarray(s.offset,s.offset+s.size))}));
     }
     await decoder.flush();
   })().catch(e=>{ decErr=e; let w; while((w=waiters.shift()))w.rej(e); });
