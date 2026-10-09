@@ -185,7 +185,7 @@
     <div id="dlZone"></div>
     <p id="msg"></p>
   </div>
-<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.4</p>
+<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.5</p>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -259,7 +259,12 @@ function initGL(){
     ' vec3 c0=texture2D(lutTex,(vec2(s.r,s.g+b0*lutN)+.5)/tsz).rgb;',
     ' vec3 c1=texture2D(lutTex,(vec2(s.r,s.g+b1*lutN)+.5)/tsz).rgb;',
     ' return mix(c0,c1,fract(s.b));}',
-    'void main(){ vec3 c=texture2D(videoTex,vec2(uv.x,1.-uv.y)).rgb;',
+    'uniform float uRot;',
+    'void main(){ vec2 ruv=uv;',
+    ' if(uRot>0.5&&uRot<1.5) ruv=vec2(1.-uv.y,uv.x);',
+    ' else if(uRot>1.5&&uRot<2.5) ruv=vec2(1.-uv.x,1.-uv.y);',
+    ' else if(uRot>2.5) ruv=vec2(uv.y,1.-uv.x);',
+    ' vec3 c=texture2D(videoTex,vec2(ruv.x,1.-ruv.y)).rgb;',
     ' vec3 g=useLUT>.5?applyLUT(c):c;',
     ' vec3 fin=mix(c,g,intensity*(1.-bypass));',
     ' if(splitX>=0.){ fin=mix(fin,c,step(uv.x,splitX)); }', // left = BEFORE
@@ -283,7 +288,8 @@ function initGL(){
   texV=mkTex(); texL=mkTex();
   gl.uniform1i(gl.getUniformLocation(pr,'videoTex'),0);
   gl.uniform1i(gl.getUniformLocation(pr,'lutTex'),1);
-  ['lutN','intensity','useLUT','bypass','splitX'].forEach(n=>U[n]=gl.getUniformLocation(pr,n));
+  ['lutN','intensity','useLUT','bypass','splitX','uRot'].forEach(n=>U[n]=gl.getUniformLocation(pr,n));
+  gl.uniform1f(U.uRot,0);
   gl.uniform1f(U.intensity,1); gl.uniform1f(U.useLUT,0); gl.uniform1f(U.bypass,0); gl.uniform1f(U.splitX,0.5);
   glReady=true;
   (function loop(){ try{ if(!wcActive) draw(); }catch(e){} requestAnimationFrame(loop); })();
@@ -420,7 +426,14 @@ $('lutIn').onchange=e=>{if(e.target.files.length)addLUTFiles([...e.target.files]
 function qualityBps(){
   const mult={max:1,high:0.7,bal:0.45,small:0.25}[$('qSel').value]||0.7;
   const base=origBps>0?origBps:8000000;
-  let bps=Math.max(800000,Math.round(base*mult-128000)); // leave room for audio
+  // When upscaling (e.g. 1080p -> 4K), scale bitrate with pixel count so the
+  // higher resolution isn't starved (capped 4x; resolution caps still apply).
+  let upScale=1;
+  try{
+    const [ow,oh]=exportSize(), iw=videoEl.videoWidth||ow, ih=videoEl.videoHeight||oh;
+    if(ow*oh>iw*ih) upScale=Math.min(4,(ow*oh)/(iw*ih));
+  }catch(e){}
+  let bps=Math.max(800000,Math.round(base*mult*upScale-128000)); // leave room for audio
   // Cap for smooth mobile playback: origBps from phones can be 50-80 Mbps,
   // which stutters/freezes on Android decoders. Caps raised for quality —
   // 4K needs ~40M to avoid grain/artifacts, still decodable on modern phones.
@@ -605,6 +618,15 @@ function demuxMP4(buf){
         const vt=(info.videoTracks||[])[0];
         if(!vt) throw new Error('no video track in file');
         const trak=(box.moov.traks||[]).find(t=>t.tkhd&&t.tkhd.track_id===vt.id);
+        let rot=0;
+        try{
+          const m=trak&&trak.tkhd&&trak.tkhd.matrix;
+          if(m&&m.length>=5){
+            if(m[0]===0&&m[1]===65536&&m[3]===-65536) rot=1;       // 90 CW
+            else if(m[0]===-65536&&m[4]===-65536) rot=2;              // 180
+            else if(m[0]===0&&m[1]===-65536&&m[3]===65536) rot=3;     // 90 CCW
+          }
+        }catch(e){}
         const entry=trak&&trak.mdia.minf.stbl.stsd.entries.find(e=>e.avcC||e.hvcC);
         if(!entry||(!entry.avcC&&!entry.hvcC)) throw new Error('unsupported video codec ('+(vt.codec||'unknown')+') — the new engine handles H.264 and H.265');
         const desc=entry.avcC?buildAvcCDesc(entry.avcC):buildHvcCDesc(entry.hvcC);
@@ -622,7 +644,7 @@ function demuxMP4(buf){
         if(lastEnd>durationUs) durationUs=lastEnd;
         clearTimeout(to);
         try{ box.stop(); }catch(_){}
-        resolve({ codec:vt.codec, desc, w:vt.video.width, h:vt.video.height,
+        resolve({ codec:vt.codec, desc, w:vt.video.width, h:vt.video.height, rot,
                   samples:list, durationUs,
                   hasAudio:((info.audioTracks||[]).length>0) });
       }catch(e){ clearTimeout(to); reject(e); }
@@ -654,6 +676,7 @@ async function exportDecoder(resW,resH,videoBps,targetFps){
     document.removeEventListener('visibilitychange',onHide);
     exporting=false; wcActive=false;
     try{if(wl)wl.release();}catch(e){}
+    try{ gl.uniform1f(U.uRot,0); }catch(e){}
     try{if(decoder&&decoder.state!=='closed')decoder.close();}catch(e){}
     try{if(videoEnc&&videoEnc.state!=='closed')videoEnc.close();}catch(e){}
     try{if(audioEnc&&audioEnc.state!=='closed')audioEnc.close();}catch(e){}
@@ -730,6 +753,7 @@ async function exportDecoder(resW,resH,videoBps,targetFps){
 
   /* --- 5. decoder: pump chunks in; consume frames in presentation order --- */
   canvas.width=resW; canvas.height=resH;
+  try{ gl.uniform1f(U.uRot, dm.rot||0); }catch(e){}
   let decErr=null;
   const frameQ=[], waiters=[];
   decoder=new VideoDecoder({
@@ -847,6 +871,8 @@ async function pickAvcCodec(w,h){
       if(s&&s.supported)return c;
     }catch(e){}
   }
+  const need4k=Math.max(w,h)>2560;
+  if(need4k) throw new Error('this device cannot hardware-encode '+(w)+'x'+(h)+' H.264 — try 1440p');
   return 'avc1.420028'; // Baseline Level 4.0: safest universal fallback
 }
 function seekTo(t){
