@@ -185,7 +185,7 @@
     <div id="dlZone"></div>
     <p id="msg"></p>
   </div>
-<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.8</p>
+<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.9</p>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -447,6 +447,24 @@ function exportSize(){
   const s=(+t)/Math.min(vw,vh);
   let w=Math.round(vw*s), h=Math.round(vh*s);
   return [w-(w%2), h-(h%2)];
+}
+function exportSizeFor(target){
+  const vw=videoEl.videoWidth, vh=videoEl.videoHeight;
+  const s=target/Math.min(vw,vh);
+  let w=Math.round(vw*s), h=Math.round(vh*s);
+  return [w-(w%2), h-(h%2)];
+}
+function qualityBpsFor(w,h){
+  const mult={max:1,high:0.7,bal:0.45,small:0.25}[$('qSel').value]||0.7;
+  const base=origBps>0?origBps:8000000;
+  let upScale=1;
+  try{
+    const iw=videoEl.videoWidth||w, ih=videoEl.videoHeight||h;
+    if(w*h>iw*ih) upScale=Math.min(4,(w*h)/(iw*ih));
+  }catch(e){}
+  let bps=Math.max(800000,Math.round(base*mult*upScale-128000));
+  const cap=h>=2160?40e6:h>=1440?25e6:h>=1080?15e6:h>=720?8e6:5e6;
+  return Math.min(bps,cap);
 }
 function updateSummary(){
   if(!videoEl.videoWidth)return;
@@ -1380,7 +1398,7 @@ $('expBtn').onclick=async()=>{
   exporting=true; $('expBtn').disabled=true; $('dlZone').innerHTML='';
   $('renderOverlay').hidden=false; setProg(0);
   try{
-    const [resW,resH]=exportSize();
+    let [resW,resH]=exportSize();
     const fmt=$('fmtSel').value;
     const fps=$('fpsSel').value==='orig'?0:+$('fpsSel').value;
     const bps=qualityBps();
@@ -1398,15 +1416,37 @@ $('expBtn').onclick=async()=>{
         }
         lab='MP4';
       }catch(e){
-        lastEngineInfo='classic (v3 failed: '+(e&&e.message||e)+')';
-        msg('Fast render failed ('+e.message+') — trying offline…');
-        exporting=true; wcActive=false; // v3 cleanup cleared these; fallbacks need them
-        try{
-          blob=await exportOffline(resW,resH,fps,bps);
-          lab='MP4';
-        }catch(e2){
-          const r=await exportLegacy();
-          blob=r.blob; ext=r.ext; lab=r.lab;
+        const em=e&&e.message||String(e);
+        // If the device can't encode this size (e.g. 4K), auto-retry v3 at a
+        // lower resolution before falling back to the old engine. A smooth
+        // 1440p beats a laggy 4K.
+        const sizeFail=/cannot hardware-encode/i.test(em);
+        if(sizeFail&&canUseDecoderEngine()){
+          const steps=[[1440,'1440p'],[1080,'1080p']];
+          for(const [target,label] of steps){
+            if(Math.min(resW,resH)<=target) continue;
+            try{
+              msg('⚡ '+label+' instead (this device can\'t encode '+resW+'×'+resH+')…');
+              const [rw,rh]=exportSizeFor(target);
+              lastEngineInfo='v3 ('+label+' — device can\'t encode '+resW+'×'+resH+')';
+              blob=await exportDecoder(rw,rh,qualityBpsFor(rw,rh),fps);
+              resW=rw; resH=rh; // filename reflects actual output size
+              ext='mp4'; lab='MP4';
+              break;
+            }catch(e2){ /* try next lower */ }
+          }
+        }
+        if(!blob){
+          lastEngineInfo='classic (v3 failed: '+em+')';
+          msg('Fast render failed ('+em+') — trying offline…');
+          exporting=true; wcActive=false; // v3 cleanup cleared these; fallbacks need them
+          try{
+            blob=await exportOffline(resW,resH,fps,bps);
+            lab='MP4';
+          }catch(e2){
+            const r=await exportLegacy();
+            blob=r.blob; ext=r.ext; lab=r.lab;
+          }
         }
       }
     }else{
