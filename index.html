@@ -185,7 +185,7 @@
     <div id="dlZone"></div>
     <p id="msg"></p>
   </div>
-<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.11</p>
+<p style="text-align:center;color:#a0a6c0;font-size:.7rem;margin-top:24px">v2.4.12</p>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -629,76 +629,73 @@ function demuxMP4(buf){
   return new Promise((resolve,reject)=>{
     let box;
     try{ box=MP4Box.createFile(); }catch(e){ reject(e); return; }
-    const to=setTimeout(()=>{ try{box.stop();}catch(_){} reject(new Error('demux timeout')); },45000);
+    const to=setTimeout(()=>{ try{box.stop();}catch(_){} reject(new Error('demux timeout')); },60000);
     const done=(fn)=>{ clearTimeout(to); try{ box.stop(); }catch(_){} fn(); };
+    const extracted=[];
+    let gotInfo=null;
     box.onError=e=>{ done(()=>reject(new Error('demux: '+((e&&e.message)||e)))); };
-    // Wait for onReady (moov parsed), then read samples AFTER flush() so
-    // fragmented MP4s (moof boxes after moov) are fully parsed. Reading
-    // samples inside onReady can return a partial list for fragmented files.
     box.onReady=info=>{
       try{
         const vt=(info.videoTracks||[])[0];
         if(!vt) throw new Error('no video track in file');
-        box._deferredInfo=info;
-        // Also snapshot samples here (onReady timing); for some files this
-        // yields the fuller list than post-flush. We take the max below.
-        try{ box._earlySamples=box.getTrackSamplesInfo(vt.id)||[]; }catch(e){ box._earlySamples=[]; }
+        gotInfo=info;
+        // Set up sample extraction NOW (moov parsed, moofs not yet).
+        // onSamples will fire as moof boxes are parsed.
+        try{
+          box.setExtractionOptions(vt.id, null, { nbSamples: Infinity });
+          box.onSamples=(id,user,smps)=>{ for(const s of smps) extracted.push(s); };
+        }catch(e){}
       }catch(e){ done(()=>reject(e)); }
     };
     try{
+      box.start();
       const b=buf.slice(0); b.fileStart=0;
       box.appendBuffer(b);
       box.flush();
     }catch(e){ done(()=>reject(e)); return; }
-    // Use mp4box sample extraction (robust for fragmented/large files).
-    // getTrackSamplesInfo can return partial lists; onSamples gets everything.
-    let tries=0;
-    const finish=()=>{
+    // Allow a tick for onSamples to complete, then build the sample list.
+    setTimeout(()=>{
       try{
-        const info=box._deferredInfo;
-        if(!info){
-          if(++tries<200) return void setTimeout(finish,50);
-          throw new Error('could not read video header');
+        const info=gotInfo;
+        if(!info) throw new Error('could not read video header');
+        const vt=(info.videoTracks||[])[0];
+        const trak=(box.moov.traks||[]).find(t=>t.tkhd&&t.tkhd.track_id===vt.id);
+        let rot=0;
+        try{
+          const m=trak&&trak.tkhd&&trak.tkhd.matrix;
+          if(m&&m.length>=5){
+            if(m[0]===0&&m[1]===65536&&m[3]===-65536) rot=1;
+            else if(m[0]===-65536&&m[4]===-65536) rot=2;
+            else if(m[0]===0&&m[1]===-65536&&m[3]===65536) rot=3;
+          }
+        }catch(e){}
+        const entry=trak&&trak.mdia.minf.stbl.stsd.entries.find(e=>e.avcC||e.hvcC);
+        if(!entry||(!entry.avcC&&!entry.hvcC)) throw new Error('unsupported video codec ('+(vt.codec||'unknown')+') — the new engine handles H.264 and H.265');
+        const desc=entry.avcC?buildAvcCDesc(entry.avcC):buildHvcCDesc(entry.hvcC);
+        // Prefer extracted samples; fallback to getTrackSamplesInfo.
+        let samples=extracted.length?extracted:[];
+        if(!samples.length){
+          try{ samples=box.getTrackSamplesInfo(vt.id)||[]; }catch(e){}
         }
-      const vt=(info.videoTracks||[])[0];
-      const trak=(box.moov.traks||[]).find(t=>t.tkhd&&t.tkhd.track_id===vt.id);
-      let rot=0;
-      try{
-        const m=trak&&trak.tkhd&&trak.tkhd.matrix;
-        if(m&&m.length>=5){
-          if(m[0]===0&&m[1]===65536&&m[3]===-65536) rot=1;
-          else if(m[0]===-65536&&m[4]===-65536) rot=2;
-          else if(m[0]===0&&m[1]===-65536&&m[3]===65536) rot=3;
-        }
-      }catch(e){}
-      const entry=trak&&trak.mdia.minf.stbl.stsd.entries.find(e=>e.avcC||e.hvcC);
-      if(!entry||(!entry.avcC&&!entry.hvcC)) throw new Error('unsupported video codec ('+(vt.codec||'unknown')+') — the new engine handles H.264 and H.265');
-      const desc=entry.avcC?buildAvcCDesc(entry.avcC):buildHvcCDesc(entry.hvcC);
-      // getTrackSamplesInfo after flush (stable; extraction API hangs post-flush).
-      let samples=[];
-      try{ samples=box.getTrackSamplesInfo(vt.id)||[]; }catch(e){}
-      const early=box._earlySamples||[];
-      if(early.length>samples.length) samples=early;
-      try{ box.stop(); }catch(_){}
-      if(!samples.length) throw new Error('no video samples found');
-      const ts=vt.timescale||90000;
-      const list=samples.map(s=>({
-        tsUs:Math.max(0,Math.round((s.cts!==undefined?s.cts:s.dts)*1e6/ts)),
-        durUs:Math.max(1,Math.round(s.duration*1e6/ts)),
-        key:!!s.is_sync,
-        offset:s.offset, size:s.size
-      }));
-      let durationUs=Math.round((info.duration||0)*1000);
-      const maxEnd=list.reduce((m,s)=>Math.max(m,s.tsUs+s.durUs),0);
-      if(maxEnd>durationUs) durationUs=maxEnd;
-      if(durationUs>2000000 && maxEnd<durationUs*0.9)
-        throw new Error('could not read all video frames (got '+Math.round(maxEnd/1e6)+'s of '+Math.round(durationUs/1e6)+'s)');
+        if(!samples.length) throw new Error('no video samples found');
+        const ts=vt.timescale||90000;
+        const list=samples.map(s=>({
+          tsUs:Math.max(0,Math.round((s.cts!==undefined?s.cts:(s.dts||0))*1e6/ts)),
+          durUs:Math.max(1,Math.round(s.duration*1e6/ts)),
+          key:!!(s.is_sync||s.isSync),
+          offset:s.offset, size:s.size,
+          data:s.data||null
+        }));
+        let durationUs=Math.round((info.duration||0)*1000);
+        const maxEnd=list.reduce((m,s)=>Math.max(m,s.tsUs+s.durUs),0);
+        if(maxEnd>durationUs) durationUs=maxEnd;
+        if(durationUs>2000000 && maxEnd<durationUs*0.9)
+          throw new Error('could not read all video frames (got '+Math.round(maxEnd/1e6)+'s of '+Math.round(durationUs/1e6)+'s)');
         done(()=>resolve({ codec:vt.codec, desc, w:vt.video.width, h:vt.video.height, rot,
                   samples:list, durationUs,
                   hasAudio:((info.audioTracks||[]).length>0) }));
       }catch(e){ done(()=>reject(e)); }
-    };
-    finish();
+    }, 200);
   });
 }
 /* Draw one decoded VideoFrame through the LUT shader onto the export canvas. */
@@ -824,7 +821,7 @@ async function exportDecoder(resW,resH,videoBps,targetFps){
       const s=samples[i];
       while(decoder.decodeQueueSize>16) await sleepMs(10);
       decoder.decode(new EncodedVideoChunk({type:s.key?'key':'delta',
-        timestamp:s.tsUs, duration:s.durUs, data:fileU8.subarray(s.offset,s.offset+s.size)}));
+        timestamp:s.tsUs, duration:s.durUs, data:(s.data||fileU8.subarray(s.offset,s.offset+s.size))}));
     }
     await decoder.flush();
   })().catch(e=>{ decErr=e; let w; while((w=waiters.shift()))w.rej(e); });
