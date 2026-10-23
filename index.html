@@ -175,7 +175,7 @@
       <h1>🎬 Reshi <span class="g">LUT Studio</span></h1>
       <p>Pro LUT grading — iPhone, Android &amp; PC</p>
     </div>
-    <span class="ver">v3.0.0</span>
+    <span class="ver">v3.0.1</span>
   </header>
 
   <div class="card" id="uploadCard">
@@ -278,7 +278,7 @@
     </div>
   </div>
 
-  <footer>Reshi LUT Studio v3.0.0 — everything runs 100% on your device.<br>No uploads, no sign-up.</footer>
+  <footer>Reshi LUT Studio v3.0.1 — everything runs 100% on your device.<br>No uploads, no sign-up.</footer>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -1538,20 +1538,69 @@ $('expBtn').onclick=async()=>{
 
 /* ---------- default LUTs: fetched from luts/ folder on first run ---------- */
 const DEFAULT_LUT_FILES=[
-  'Cine_wedding.cube','Cinematic_Lut_V2.cube','SONY_HL.cube',
-  'Sony-CL-AZ.cube','FGCineVibrant.cube',
-  'sony_lut_1.Animals_09___4K_res.cube','lut_1.rabbit-5639615.cube','Apple-Log_XZ1.cube'
+  '04_Drone LUTs_Morning Nature.cube',
+  '06_S_Log2 LUTs_Vibrance.cube',
+  '07_Vlog LUTs_Bleak Galaxy.cube',
+  '08_Davinci Resolve LUTs_Colorful.cube',
+  '09_After Effects LUTs_Nature Color.cube',
+  '4K COLOUR.cube',
+  'Apple-Log_XZ1.cube',
+  'Arabica 12.CUBE',
+  'Blue Hill.cube',
+  'Bourbon 64.CUBE',
+  'Byers 11.CUBE',
+  'Cine_wedding.cube',
+  'Cinematic Lut V2 2.cube',
+  'Cinematic Lut V2.cube',
+  'Cinematic_Lut_V2.cube',
+  'cool-cinematic.cube',
+  'cyberpunk.cube',
+  'Day Night.cube',
+  'DJI OSMO Action 4 D-Log M to Rec.709 V1.cube',
+  'faded-film.cube',
+  'FGCineVibrant.cube',
+  'G Rabbit.cube',
+  'Going for a walk.CUBE',
+  'golden-hour.cube',
+  'Golden_Forest_35.A035_04040921_C008 (1).cube',
+  'Green_Nature.cube',
+  'HD World.cube',
+  'Hyla 68.CUBE',
+  'Iphone Lut.cube',
+  'Kodak_2383_Base_Lut_Rec.709_2.4_IG__ashikulislam3251.cube',
+  'lut_1.rabbit-5639615.cube',
+  'My created lut.cube',
+  'Nature.cube',
+  'Night Lut.cube',
+  'Night Reshi.cube',
+  'noir.cube',
+  'Once upon a time.CUBE',
+  'Passing by.CUBE',
+  'RAIN AFTER.cube',
+  'Slog3 Cinematics.cube',
+  'SMDfilm_net.cube',
+  'SONY HL.cube',
+  'Sony-CL-AZ.cube',
+  'SONY_HL.cube',
+  'sony_lut_1.Animals_09___4K_res.cube',
+  'sunset.CUBE',
+  'teal-orange.cube',
+  'vibrant-pop.cube',
+  'Vivid.cube',
+  'warm-vintage.cube',
+  'well-see.CUBE'
 ];
 async function loadDefaultLuts(){
   for(const fname of DEFAULT_LUT_FILES){
     try{
       const name=fname.replace(/\.cube$/i,'');
       if(luts.some(l=>l.name===name||l.name===fname)) continue;
-      const resp=await fetch('luts/'+fname);
+      const resp=await fetch('luts/'+encodeURIComponent(fname));
       if(!resp.ok) continue;
       const text=await resp.text();
       const lut=parseCube(text);
       luts.push({name:fname,lut:lut});
+      renderLuts();
       try{ if(typeof DB!=='undefined'&&DB) DB.put({name:fname,text:text}); }catch(e){}
     }catch(e){}
   }
