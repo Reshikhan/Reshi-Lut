@@ -175,7 +175,7 @@
       <h1>🎬 Reshi <span class="g">LUT Studio</span></h1>
       <p>Pro LUT grading — iPhone, Android &amp; PC</p>
     </div>
-    <span class="ver">v3.0.3</span>
+    <span class="ver">v3.0.4</span>
   </header>
 
   <div class="card" id="uploadCard">
@@ -278,7 +278,7 @@
     </div>
   </div>
 
-  <footer>Reshi LUT Studio v3.0.3 — everything runs 100% on your device.<br>No uploads, no sign-up.</footer>
+  <footer>Reshi LUT Studio v3.0.4 — everything runs 100% on your device.<br>No uploads, no sign-up.</footer>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -638,8 +638,8 @@ async function createEncoder(baseCfg,attempts,output,holder){
   throw lastErr||new Error('encoder rejected config');
 }
 async function preflight(){
-  // Only meaningful for the WebCodecs routes; iOS keeps its classic path untouched.
-  if(isIOS()||typeof VideoEncoder==='undefined')return;
+  // Only meaningful for the WebCodecs routes.
+  if(typeof VideoEncoder==='undefined')return;
   const tiers=['720','1080','1440','2160'];
   const fps=Math.min(60,expFps||srcFps||30);
   for(const t of tiers){
@@ -805,8 +805,7 @@ function isIOS(){
 }
 function canUseFastEngine(){
   try{
-    return !isIOS()
-      && typeof VideoDecoder!=='undefined'
+    return typeof VideoDecoder!=='undefined'
       && typeof EncodedVideoChunk!=='undefined'
       && typeof VideoEncoder!=='undefined'
       && typeof MP4Box!=='undefined'
@@ -819,7 +818,6 @@ function canUseOfflineEngine(){
 }
 function fastEngineWhy(){
   try{
-    if(isIOS())return 'iPhone uses the classic path';
     if(typeof VideoDecoder==='undefined')return 'no VideoDecoder in this browser';
     if(typeof MP4Box==='undefined')return 'mp4box library failed to load (network?)';
     if(typeof VideoEncoder==='undefined')return 'no VideoEncoder in this browser';
@@ -1467,11 +1465,7 @@ $('expBtn').onclick=async()=>{
   const bps0=qualityBps();
   let result=null, lastErr=null;
   try{
-    if(isIOS()){
-      const r=await exportLegacy();
-      result={blob:r.blob,ext:r.ext,lab:r.lab,w:resW0,h:resH0,note:''};
-      lastEngineInfo='classic (iPhone path)';
-    }else if(canUseFastEngine()&&!isWebMFile(videoFile)){
+    if(canUseFastEngine()&&!isWebMFile(videoFile)){
       try{
         result=await exportFast(resW0,resH0,bps0,expFps,expFmt);
         lastEngineInfo='fast engine';
