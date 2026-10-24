@@ -175,7 +175,7 @@
       <h1>🎬 Reshi <span class="g">LUT Studio</span></h1>
       <p>Pro LUT grading — iPhone, Android &amp; PC</p>
     </div>
-    <span class="ver">v3.0.4</span>
+    <span class="ver">v3.0.5</span>
   </header>
 
   <div class="card" id="uploadCard">
@@ -278,7 +278,7 @@
     </div>
   </div>
 
-  <footer>Reshi LUT Studio v3.0.4 — everything runs 100% on your device.<br>No uploads, no sign-up.</footer>
+  <footer>Reshi LUT Studio v3.0.5 — everything runs 100% on your device.<br>No uploads, no sign-up.</footer>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -892,18 +892,26 @@ function demuxMP4(buf){
   return new Promise((resolve,reject)=>{
     let box;
     try{ box=MP4Box.createFile(); }catch(e){ reject(e); return; }
-    let info=null, extracted=[], expected=0, settled=false;
+    let info=null, extracted=[], extractedAudio=[], expected=0, settled=false;
+    let audioId=0, audioTrack=null;
     const finish=(fn,v)=>{ if(settled)return; settled=true; try{box.stop();}catch(_){} fn(v); };
     box.onError=e=>finish(reject,new Error('demux: '+((e&&e.message)||e)));
     box.onReady=inf=>{
       info=inf;
       try{
         const vt=(inf.videoTracks||[])[0];
+        const at=(inf.audioTracks||[])[0];
+        if(at){ audioId=at.id; audioTrack=at; box.setExtractionOptions(at.id,null,{nbSamples:Infinity}); }
         if(vt){
           expected=vt.nb_samples||0;
           box.setExtractionOptions(vt.id,null,{nbSamples:Infinity});
-          box.onSamples=(id,user,smps)=>{ for(const s of smps)extracted.push(s); };
         }
+        box.onSamples=(id,user,smps)=>{
+          for(const s of smps){
+            if(vt&&id===vt.id) extracted.push(s);
+            else if(at&&id===at.id) extractedAudio.push(s);
+          }
+        };
       }catch(e){}
     };
     try{
@@ -956,9 +964,29 @@ function demuxMP4(buf){
         if(durationUs>2000000&&maxEnd<durationUs*0.9)
           throw new Error('could not read all video frames (got '+Math.round(maxEnd/1e6)+'s of '+Math.round(durationUs/1e6)+'s)');
         const fps=durationUs>0?Math.round(list.length/(durationUs/1e6)):0;
+        let audioSamples=[], audioCodec='', audioRate=0, audioCh=0;
+        if(audioTrack){
+          const ats=audioTrack.timescale||48000;
+          audioCodec=audioTrack.codec||'';
+          audioRate=(audioTrack.audio&&audioTrack.audio.sample_rate)||0;
+          audioCh=(audioTrack.audio&&audioTrack.audio.channel_count)||0;
+          // mp4box's onSamples delivers nothing for flat (non-fragmented)
+          // files, so fall back to sample info + slicing frames from the
+          // file buffer — the same route the video path already relies on.
+          let aList=extractedAudio.length?extractedAudio:[];
+          if(!aList.length){
+            try{ aList=box.getTrackSamplesInfo(audioId)||[]; }catch(e){}
+          }
+          audioSamples=aList.map(s=>({
+            tsUs:Math.max(0,Math.round((s.cts!==undefined?s.cts:(s.dts||0))*1e6/ats)),
+            durUs:Math.max(1,Math.round(s.duration*1e6/ats)),
+            data:s.data||((s.offset!==undefined&&s.size)?new Uint8Array(buf,s.offset,s.size):null)
+          })).filter(s=>s.data);
+        }
         finish(resolve,{ codec:vt.codec, desc, w:vt.video.width, h:vt.video.height, rot,
                   samples:list, durationUs, fps,
-                  hasAudio:((info.audioTracks||[]).length>0) });
+                  hasAudio:((info.audioTracks||[]).length>0),
+                  audioSamples, audioCodec, audioRate, audioCh });
       }catch(e){ finish(reject,e); }
     },50);
   });
@@ -1056,14 +1084,19 @@ async function exportFast(resW,resH,videoBps,targetFps,fmt){
     }
     if(!encCodec) throw new Error('this device cannot encode '+resW+'×'+resH+' video');
 
-    /* --- 3. audio (from the file, not the clock) --- */
-    let audioBuf=null, wantAudio=false, aSampleRate=0, aChannels=0;
-    if(dm.hasAudio){
+    /* --- 3. audio: prefer copying the original AAC track untouched ---
+       (no decode, no re-encode — works even where this browser cannot
+       encode AAC, e.g. Safari). Fall back to decode+re-encode otherwise. */
+    let audioMode='none', audioBuf=null, wantAudio=false, aSampleRate=0, aChannels=0;
+    if(dm.audioSamples&&dm.audioSamples.length&&dm.audioCodec&&dm.audioCodec.indexOf('mp4a.40.2')>=0){
+      audioMode='pass'; aSampleRate=dm.audioRate; aChannels=dm.audioCh; wantAudio=true;
+    }else if(dm.hasAudio){
       audioBuf=await decodeSourceAudio(fileBuf);
       if(audioBuf){
         aSampleRate=audioBuf.sampleRate; aChannels=audioBuf.numberOfChannels;
         wantAudio=await aacSupported(aSampleRate,aChannels);
-        if(!wantAudio) note+='Exported without sound — this browser cannot encode AAC audio. ';
+        if(wantAudio) audioMode='encode';
+        else note+='Exported without sound — this browser cannot encode AAC audio. ';
       }else{
         note+='Exported without sound — the audio track could not be read. ';
       }
@@ -1091,12 +1124,19 @@ async function exportFast(resW,resH,videoBps,targetFps,fmt){
     encHolder.armed=true;
 
     if(wantAudio){
-      audioEnc=new AudioEncoder({
-        output:(ch,meta)=>{ if(!finalized&&!failed){ try{ muxer.addAudioChunk(ch,meta); }catch(e){} } },
-        error:()=>{}
-      });
-      audioEnc.configure({codec:'mp4a.40.2',sampleRate:aSampleRate,numberOfChannels:aChannels,bitrate:128000});
-      await feedAudio(audioEnc,audioBuf);
+      if(audioMode==='pass'){
+        for(const as of dm.audioSamples){
+          if(abortExport)throw ERR_CANCEL;
+          try{ muxer.addAudioChunk(new EncodedAudioChunk({type:'key',timestamp:as.tsUs,duration:as.durUs,data:as.data})); }catch(e){}
+        }
+      }else{
+        audioEnc=new AudioEncoder({
+          output:(ch,meta)=>{ if(!finalized&&!failed){ try{ muxer.addAudioChunk(ch,meta); }catch(e){} } },
+          error:()=>{}
+        });
+        audioEnc.configure({codec:'mp4a.40.2',sampleRate:aSampleRate,numberOfChannels:aChannels,bitrate:128000});
+        await feedAudio(audioEnc,audioBuf);
+      }
     }
 
     /* --- 5. decoder pump -> shader -> encoder --- */
@@ -1230,8 +1270,12 @@ async function exportOffline(resW,resH,targetFps,videoBps){
   $('prog').hidden=false; setProg(0); setRoTxt('Careful engine: preparing…');
   try{
     let fps=targetFps||srcFps||0;
-    if(!fps&&videoFile&&typeof MP4Box!=='undefined'&&!/webm/i.test(videoFile.type||'')){
-      try{ const dm=await demuxMP4(videoFile); if(dm&&dm.fps) fps=dm.fps; }catch(e){}
+    let offDm=null, fb=null;
+    if(videoFile&&typeof MP4Box!=='undefined'&&!/webm/i.test(videoFile.type||'')){
+      fb=await videoFile.arrayBuffer().catch(()=>null);
+      if(fb){
+        try{ offDm=await demuxMP4(fb); if(offDm&&offDm.fps) fps=offDm.fps; }catch(e){}
+      }
     }
     fps=fps||30;
     const frameDurUs=Math.round(1e6/fps);
@@ -1239,15 +1283,18 @@ async function exportOffline(resW,resH,targetFps,videoBps){
     if(!isFinite(duration)||duration<=0) throw new Error('cannot read video duration');
     const totalFrames=Math.max(1,Math.ceil(duration*fps));
 
-    let audioBuf=null,wantAudio=false,aSampleRate=0,aChannels=0;
-    if(videoFile){
-      const fb=await videoFile.arrayBuffer().catch(()=>null);
+    let audioBuf=null,wantAudio=false,aSampleRate=0,aChannels=0,audioMode='none';
+    if(offDm&&offDm.audioSamples&&offDm.audioSamples.length&&offDm.audioCodec&&offDm.audioCodec.indexOf('mp4a.40.2')>=0){
+      audioMode='pass'; aSampleRate=offDm.audioRate; aChannels=offDm.audioCh; wantAudio=true;
+    }else if(videoFile){
+      if(!fb) fb=await videoFile.arrayBuffer().catch(()=>null);
       if(fb) audioBuf=await decodeSourceAudio(fb);
-    }
-    if(audioBuf){
-      aSampleRate=audioBuf.sampleRate; aChannels=audioBuf.numberOfChannels;
-      wantAudio=await aacSupported(aSampleRate,aChannels);
-      if(!wantAudio) note='Exported without sound — this browser cannot encode AAC audio. ';
+      if(audioBuf){
+        aSampleRate=audioBuf.sampleRate; aChannels=audioBuf.numberOfChannels;
+        wantAudio=await aacSupported(aSampleRate,aChannels);
+        if(wantAudio) audioMode='encode';
+        else note='Exported without sound — this browser cannot encode AAC audio. ';
+      }
     }
 
     target=new window.Mp4Muxer.ArrayBufferTarget();
@@ -1271,12 +1318,19 @@ async function exportOffline(resW,resH,targetFps,videoBps){
     encHolder2.armed=true;
 
     if(wantAudio){
-      audioEnc=new AudioEncoder({
-        output:(ch,meta)=>{ if(!finalized){ try{ muxer.addAudioChunk(ch,meta); }catch(e){} } },
-        error:()=>{}
-      });
-      audioEnc.configure({codec:'mp4a.40.2',sampleRate:aSampleRate,numberOfChannels:aChannels,bitrate:128000});
-      await feedAudio(audioEnc,audioBuf);
+      if(audioMode==='pass'){
+        for(const as of offDm.audioSamples){
+          if(abortExport)throw ERR_CANCEL;
+          try{ muxer.addAudioChunk(new EncodedAudioChunk({type:'key',timestamp:as.tsUs,duration:as.durUs,data:as.data})); }catch(e){}
+        }
+      }else{
+        audioEnc=new AudioEncoder({
+          output:(ch,meta)=>{ if(!finalized){ try{ muxer.addAudioChunk(ch,meta); }catch(e){} } },
+          error:()=>{}
+        });
+        audioEnc.configure({codec:'mp4a.40.2',sampleRate:aSampleRate,numberOfChannels:aChannels,bitrate:128000});
+        await feedAudio(audioEnc,audioBuf);
+      }
     }
 
     canvas.width=resW; canvas.height=resH;
