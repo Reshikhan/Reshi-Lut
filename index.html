@@ -175,7 +175,7 @@
       <h1>🎬 Reshi <span class="g">LUT Studio</span></h1>
       <p>Pro LUT grading — iPhone, Android &amp; PC</p>
     </div>
-    <span class="ver">v3.0.5</span>
+    <span class="ver">v3.0.6</span>
   </header>
 
   <div class="card" id="uploadCard">
@@ -278,7 +278,7 @@
     </div>
   </div>
 
-  <footer>Reshi LUT Studio v3.0.5 — everything runs 100% on your device.<br>No uploads, no sign-up.</footer>
+  <footer>Reshi LUT Studio v3.0.6 — everything runs 100% on your device.<br>No uploads, no sign-up.</footer>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -1088,7 +1088,7 @@ async function exportFast(resW,resH,videoBps,targetFps,fmt){
        (no decode, no re-encode — works even where this browser cannot
        encode AAC, e.g. Safari). Fall back to decode+re-encode otherwise. */
     let audioMode='none', audioBuf=null, wantAudio=false, aSampleRate=0, aChannels=0;
-    if(dm.audioSamples&&dm.audioSamples.length&&dm.audioCodec&&dm.audioCodec.indexOf('mp4a.40.2')>=0){
+    if(dm.audioSamples&&dm.audioSamples.length&&dm.audioCodec&&dm.audioCodec.indexOf('mp4a')===0){
       audioMode='pass'; aSampleRate=dm.audioRate; aChannels=dm.audioCh; wantAudio=true;
     }else if(dm.hasAudio){
       audioBuf=await decodeSourceAudio(fileBuf);
@@ -1284,7 +1284,7 @@ async function exportOffline(resW,resH,targetFps,videoBps){
     const totalFrames=Math.max(1,Math.ceil(duration*fps));
 
     let audioBuf=null,wantAudio=false,aSampleRate=0,aChannels=0,audioMode='none';
-    if(offDm&&offDm.audioSamples&&offDm.audioSamples.length&&offDm.audioCodec&&offDm.audioCodec.indexOf('mp4a.40.2')>=0){
+    if(offDm&&offDm.audioSamples&&offDm.audioSamples.length&&offDm.audioCodec&&offDm.audioCodec.indexOf('mp4a')===0){
       audioMode='pass'; aSampleRate=offDm.audioRate; aChannels=offDm.audioCh; wantAudio=true;
     }else if(videoFile){
       if(!fb) fb=await videoFile.arrayBuffer().catch(()=>null);
