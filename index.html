@@ -175,7 +175,7 @@
       <h1>🎬 Reshi <span class="g">LUT Studio</span></h1>
       <p>Pro LUT grading — iPhone, Android &amp; PC</p>
     </div>
-    <span class="ver">v3.0.2</span>
+    <span class="ver">v3.0.3</span>
   </header>
 
   <div class="card" id="uploadCard">
@@ -278,7 +278,7 @@
     </div>
   </div>
 
-  <footer>Reshi LUT Studio v3.0.2 — everything runs 100% on your device.<br>No uploads, no sign-up.</footer>
+  <footer>Reshi LUT Studio v3.0.3 — everything runs 100% on your device.<br>No uploads, no sign-up.</footer>
 </div>
 
 <video id="v" playsinline webkit-playsinline crossorigin="anonymous" hidden></video>
@@ -584,8 +584,12 @@ async function probeCodec(codec,w,h,fps,bps){
   if(codecProbeCache.has(key))return codecProbeCache.get(key);
   let ok=false;
   try{
-    const s=await VideoEncoder.isConfigSupported({codec,width:w,height:h,bitrate:Math.max(800000,Math.round(bps)),framerate:fps});
-    ok=!!(s&&s.supported);
+    const base={codec,width:w,height:h,bitrate:Math.max(800000,Math.round(bps)),framerate:fps};
+    for(const ha of ['prefer-hardware',null]){
+      const cfg=Object.assign({},base); if(ha)cfg.hardwareAcceleration=ha;
+      const s=await VideoEncoder.isConfigSupported(cfg);
+      if(s&&s.supported){ ok=true; break; }
+    }
   }catch(e){}
   codecProbeCache.set(key,ok);
   return ok;
@@ -606,6 +610,32 @@ async function pickCodec(w,h,fps,bps,fmt){
     }
   }
   return null;
+}
+/* Try encoder configs in order, verifying each one actually initializes.
+   A config can pass isConfigSupported yet fail at creation (e.g. a missing
+   hardware encoder) — that failure arrives async via the error callback,
+   so each attempt gets a short window to reach 'configured' cleanly.
+   holder: {armed:false, fail:fn} — errors route to the owner only once armed. */
+async function createEncoder(baseCfg,attempts,output,holder){
+  let lastErr=null;
+  for(const extra of attempts){
+    let err=null;
+    const enc=new VideoEncoder({
+      output,
+      error:e=>{ err=e; if(holder&&holder.armed)holder.fail(e); }
+    });
+    try{ enc.configure(Object.assign({},baseCfg,extra)); }
+    catch(e){ lastErr=e; try{enc.close();}catch(_){} continue; }
+    const t0=Date.now();
+    while(Date.now()-t0<500){
+      if(err||enc.state==='configured')break;
+      await sleepMs(20);
+    }
+    if(!err&&enc.state==='configured')return enc;
+    lastErr=err||new Error('encoder config was not accepted');
+    try{ enc.close(); }catch(_){}
+  }
+  throw lastErr||new Error('encoder rejected config');
 }
 async function preflight(){
   // Only meaningful for the WebCodecs routes; iOS keeps its classic path untouched.
@@ -1049,20 +1079,18 @@ async function exportFast(resW,resH,videoBps,targetFps,fmt){
     if(wantAudio) mopts.audio={codec:'aac',sampleRate:aSampleRate,numberOfChannels:aChannels};
     muxer=new window.Mp4Muxer.Muxer(mopts);
 
-    videoEnc=new VideoEncoder({
-      output:(ch,meta)=>{ if(!finalized&&!failed){ try{ muxer.addVideoChunk(ch,meta); }catch(e){ failed=e; } } },
-      error:e=>{ failed=e; }
-    });
     const baseCfg={codec:encCodec,width:resW,height:resH,
       bitrate:Math.max(800000,Math.round(videoBps)),bitrateMode:'constant', framerate:srcFpsE};
-    let cfgOk=false;
-    for(const lm of ['quality','realtime',null]){
-      try{
-        const cfg=Object.assign({},baseCfg); if(lm)cfg.latencyMode=lm;
-        videoEnc.configure(cfg); cfgOk=true; break;
-      }catch(e){}
-    }
-    if(!cfgOk) throw new Error('encoder rejected '+resW+'×'+resH+' — try a lower resolution');
+    const encAttempts=[
+      {hardwareAcceleration:'prefer-hardware',latencyMode:'quality'},
+      {hardwareAcceleration:'prefer-hardware',latencyMode:'realtime'},
+      {hardwareAcceleration:'prefer-hardware'},
+      {latencyMode:'quality'},{latencyMode:'realtime'},{}];
+    const encHolder={armed:false, fail:e=>{ failed=e; }};
+    videoEnc=await createEncoder(baseCfg,encAttempts,
+      (ch,meta)=>{ if(!finalized&&!failed){ try{ muxer.addVideoChunk(ch,meta); }catch(e){ failed=e; } } },
+      encHolder);
+    encHolder.armed=true;
 
     if(wantAudio){
       audioEnc=new AudioEncoder({
@@ -1086,9 +1114,15 @@ async function exportFast(resW,resH,videoBps,targetFps,fmt){
       const cfg={codec:dm.codec,
         description:dm.desc.buffer.slice(dm.desc.byteOffset,dm.desc.byteOffset+dm.desc.byteLength),
         codedWidth:dm.w, codedHeight:dm.h};
-      const sup=await VideoDecoder.isConfigSupported(cfg).catch(()=>null);
-      if(sup&&!sup.supported) throw new Error('this browser cannot decode this video format');
-      decoder.configure(cfg);
+      const hwCfg=Object.assign({},cfg,{hardwareAcceleration:'prefer-hardware'});
+      const supHw=await VideoDecoder.isConfigSupported(hwCfg).catch(()=>null);
+      if(supHw&&supHw.supported){
+        decoder.configure(hwCfg);
+      }else{
+        const sup=await VideoDecoder.isConfigSupported(cfg).catch(()=>null);
+        if(sup&&!sup.supported) throw new Error('this browser cannot decode this video format');
+        decoder.configure(cfg);
+      }
     }catch(e){ throw (e instanceof Error?e:new Error('decoder setup failed')); }
     const nextFrame=()=>{
       if(frameQ.length) return Promise.resolve(frameQ.shift());
@@ -1104,7 +1138,7 @@ async function exportFast(resW,resH,videoBps,targetFps,fmt){
       for(let i=0;i<total;i++){
         if(abortExport||failed||decErr)return;
         const s=samples[i];
-        while(decoder.decodeQueueSize>16){ if(abortExport||failed||decErr)return; await sleepMs(10); }
+        while(decoder.decodeQueueSize>16||frameQ.length>3){ if(abortExport||failed||decErr)return; await sleepMs(10); }
         try{
           decoder.decode(new EncodedVideoChunk({type:s.key?'key':'delta',
             timestamp:s.tsUs, duration:s.durUs, data:(s.data||fileU8.subarray(s.offset,s.offset+s.size))}));
@@ -1226,19 +1260,17 @@ async function exportOffline(resW,resH,targetFps,videoBps){
 
     const encCodec=await pickCodec(resW,resH,fps,videoBps,'mp4');
     if(!encCodec) throw new Error('this device cannot encode '+resW+'×'+resH+' video');
-    videoEnc=new VideoEncoder({
-      output:(ch,meta)=>{ if(!finalized){ try{ muxer.addVideoChunk(ch,meta); }catch(e){ failed=e; } } },
-      error:e=>{ failed=e; }
-    });
-    let cfgOk=false;
-    for(const lm of ['quality','realtime',null]){
-      try{
-        const c={codec:encCodec,width:resW,height:resH,bitrate:Math.max(800000,Math.round(videoBps)),bitrateMode:'constant',framerate:fps};
-        if(lm)c.latencyMode=lm;
-        videoEnc.configure(c); cfgOk=true; break;
-      }catch(e){}
-    }
-    if(!cfgOk) throw new Error('encoder rejected '+resW+'×'+resH+' — try a lower resolution');
+    const offBaseCfg={codec:encCodec,width:resW,height:resH,bitrate:Math.max(800000,Math.round(videoBps)),bitrateMode:'constant',framerate:fps};
+    const encAttempts2=[
+      {hardwareAcceleration:'prefer-hardware',latencyMode:'quality'},
+      {hardwareAcceleration:'prefer-hardware',latencyMode:'realtime'},
+      {hardwareAcceleration:'prefer-hardware'},
+      {latencyMode:'quality'},{latencyMode:'realtime'},{}];
+    const encHolder2={armed:false, fail:e=>{ failed=e; }};
+    videoEnc=await createEncoder(offBaseCfg,encAttempts2,
+      (ch,meta)=>{ if(!finalized){ try{ muxer.addVideoChunk(ch,meta); }catch(e){ failed=e; } } },
+      encHolder2);
+    encHolder2.armed=true;
 
     if(wantAudio){
       audioEnc=new AudioEncoder({
